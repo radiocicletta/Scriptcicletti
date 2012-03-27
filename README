@@ -1,3 +1,11 @@
 Script Radiociclettosi
+======================
 
-Tag Similarity => cerca di calcolare quanto due canzoni siano simili dalla lista dei tag di last.fm
+Manutenzione e automazione dello studio di trasmissione principale, esperimenti ed altro
+
+
+* MusicCatalog: catalogatore automatico musicale e generatore di plyalist
+* CatalogQuery: interfaccia web per MusicCatalog
+* Podcaster: generatore di podcast mp4
+* Shouter: replicatore di messaggi per social network
+* Tag Similarity: cerca di calcolare quanto due canzoni siano simili dalla lista dei tag di last.fm
