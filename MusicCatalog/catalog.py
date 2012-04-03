@@ -6,7 +6,7 @@
 # requirements: pysqlite, pylast, mutagen, pyinotify
 # optional requirements: sox, soundstretch
 
-__version__ = '0.5'
+__version__ = '0.5.1'
 __author__ = 'radiocicletta <radiocicletta@gmail.com>'
 
 from parameters import * # a file parameters.py containing last.fm variables USERNAME and APIKEY
@@ -40,6 +40,7 @@ import traceback
 from time import sleep
 import logging
 from collections import deque
+from random import Random
 
 try: #TODO: add FSEvents support
    from pyinotify import WatchManager, Notifier, ThreadedNotifier, EventsCodes, ProcessEvent, ExcludeFilter, IN_CREATE, IN_MOVED_TO, IN_CLOSE_WRITE, IN_DELETE, IN_ISDIR, IN_MOVED_FROM
@@ -91,6 +92,11 @@ PRAGMA foreign_keys = ON;
 """create table if not exists genre_x_genre (
    id_genre integer not null,
    id_related_genre integer not null,
+   similarity real not null default 0.0
+);""",
+"""create table if not exists genre_x_tag (
+   id_genre integer not null,
+   id_tag integer not null,
    similarity real not null default 0.0
 );""",
 """create table if not exists tag (
@@ -267,19 +273,22 @@ class FiledataThread(threading.Thread):
          if not path:
             continue
          for i in ('30', '60', '90', '120'):
-            logging.debug("soxi_process...")
-            soxi_process = subprocess.Popen(["/usr/bin/soxi", "-D", path], stdout = subprocess.PIPE, stderr = subprocess.PIPE)
-            soxi_output = float(soxi_process.communicate()[0])
-            logging.debug("sox_process...")
-            sox_process = subprocess.Popen(["/usr/bin/sox", path, "-t", "wav", "/tmp/.stretch.wav", "trim", "0", i], stdout = subprocess.PIPE, stderr = subprocess.PIPE) # well done, dear sox friend. Well done.
-            #sox_process.wait()
-            sox_process.communicate()
-            logging.debug("bpm_process...")
-            bpm_process = subprocess.Popen(["/usr/bin/soundstretch", "/tmp/.stretch.wav", "-bpm", "-quick", "-naa"], stdout = subprocess.PIPE, stderr = subprocess.PIPE)
-            bpm_output = bpm_process.communicate()
-            logging.debug("done.\n")
+            try:
+               logging.debug("soxi_process...")
+               soxi_process = subprocess.Popen(["/usr/bin/soxi", "-D", path], stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+               soxi_output = float(soxi_process.communicate()[0])
+               logging.debug("sox_process...")
+               sox_process = subprocess.Popen(["/usr/bin/sox", path, "-t", "wav", "/tmp/.stretch.wav", "trim", "0", i], stdout = subprocess.PIPE, stderr = subprocess.PIPE) # well done, dear sox friend. Well done.
+               #sox_process.wait()
+               sox_process.communicate()
+               logging.debug("bpm_process...")
+               bpm_process = subprocess.Popen(["/usr/bin/soundstretch", "/tmp/.stretch.wav", "-bpm", "-quick", "-naa"], stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+               bpm_output = bpm_process.communicate()
+               logging.debug("done.\n")
    
-            bpm_pattern = re.search ("Detected BPM rate ([0-9]+)", bpm_output[0], re.M)
+               bpm_pattern = re.search ("Detected BPM rate ([0-9]+)", bpm_output[0], re.M)
+            except Exception as e:
+               logging.debug(e)
             if bpm_pattern:
                bpm = float(bpm_pattern.groups()[0])
                break
@@ -403,46 +412,53 @@ class PollAnalyzer(threading.Thread):
             sleeptime = sleeptime / 2
             self.condition.acquire()
             known_genres = db.execute("select distinct id, desc, descclean from genre").fetchall()
+            known_tags = db.execute("select distinct id, name, nameclean from tag").fetchall()
             self.condition.release()
-            commit = False
+            #commit = False
             for i in xrange(0, len(known_genres)):
                if not self.running:
                   break
                splitted_genre = re.split("[/,;]", known_genres[i][1])
                self.condition.acquire()
-               for j in xrange(0, len(known_genres)):
-                  if i == j:
-                     continue
-                  if known_genres[i][2] == known_genres[j][2]:
-                     similarity = 1.0
-                  else:
-                     compared_genre = re.split("[/,;]", known_genres[j][1])
-                     distance = {}
-                     sametags = 0
-                     for a in splitted_genre:
-                        if not a:
-                           continue
-                        for b in compared_genre:
-                           if not b or b in distance:
-                              continue
-                           if len(a) == len(b):
-                              h = hamming(a, b) / float(len(a))
-                              if h:
-                                 distance[b] = h
-                              else:
-                                sametags = sametags + 1
-                           else:
-                              distance[b] = levenshtein(a, b) / float(max(len(a), len(b)))
-                     if distance:
-                        # geometric mean + weighted equal tags
-                        similarity =  1.0 - (reduce(lambda x, y: x*y, distance.values()))**(1.0/len(distance)) + (sametags / (sametags + len(distance)))
+
+               def calcsimilarity(known, table, id1, id2):
+                  ret = False
+                  for j in xrange(0, len(known)):
+                     if i == j:
+                        continue
+                     if known_genres[i][2] == known[j][2]:
+                        similarity = 1.0
                      else:
-                        similarity = 0.0
-                  if similarity > 0.33:
-                     if not db.execute("select * from genre_x_genre where id_genre = ? and id_related_genre = ?", (known_genres[i][0], known_genres[j][0])).fetchall():
-                        db.execute("insert into genre_x_genre (id_genre, id_related_genre, similarity) values ( ?, ?, ?)", (known_genres[i][0], known_genres[j][0], similarity))
-                        commit = True
-               if commit:
+                        compared_genre = re.split("[/,;]", known[j][1])
+                        distance = {}
+                        sametags = 0
+                        for a in splitted_genre:
+                           if not a:
+                              continue
+                           for b in compared_genre:
+                              if not b or b in distance:
+                                 continue
+                              if len(a) == len(b):
+                                 h = hamming(a, b) / float(len(a))
+                                 if h:
+                                    distance[b] = h
+                                 else:
+                                   sametags = sametags + 1
+                              else:
+                                 distance[b] = levenshtein(a, b) / float(max(len(a), len(b)))
+                        if distance:
+                           # geometric mean + weighted equal tags
+                           similarity =  1.0 - (reduce(lambda x, y: x*y, distance.values()))**(1.0/len(distance)) + (sametags / (sametags + len(distance)))
+                        else:
+                           similarity = 0.0
+                     if similarity > 0.33:
+                        if not db.execute("select * from %s  where %s  = ? and %s = ?" % (table, id1, id2), (known_genres[i][0], known[j][0])).fetchall():
+                           db.execute("insert into %s (%s, %s, similarity) values ( ?, ?, ?)" % (table, id1, id2), (known_genres[i][0], known[j][0], similarity))
+                           ret = True
+                  return ret 
+               
+               
+               if calcsimilarity(known_genres, "genre_x_genre", "id_genre", "id_related_genre") or calcsimilarity(known_tags, "genre_x_tag", "id_genre", "id_tag"):
                   db.commit()
                complete_genres = db.execute("select count(id) from genre;").fetchall()[0][0]
                self.condition.release()
@@ -507,19 +523,39 @@ class CatalogHTTPRequestHandler(SimpleHTTPRequestHandler):
             requests = items[2].split(',')
             if items[1] == 'genre':
                ids = [i[0] for i in db.execute("select id from genre where desc in ( %s )" %  ",".join(['?' for i in xrange(0,len(requests))]), requests).fetchall()]
-               query = "%s where s.genre_id in ( %s ) order by random();" % (songquery, ",".join(['?' for i in xrange(0,len( ids ))]))
+               query = "%s where s.genre_id in ( %s )" % (songquery, ",".join(['?' for i in xrange(0,len( ids ))]))
                primary_results = db.execute(query, ids).fetchall()
+               logging.debug("Primary results.")
 
-               related_requests = "select distinct id_related_genre from genre_x_genre where id_genre in ( %s ) and similarity > 0.98" %  ",".join(['?' for i in xrange(0,len( ids ))])
+               related_requests = "select distinct id_related_genre from genre_x_genre where id_genre in ( %s ) and similarity > 0.98;" %  ",".join(['?' for i in xrange(0,len( ids ))])
                related_ids = [i[0] for i in db.execute(related_requests, ids).fetchall()]
                
                if related_ids:
-                  related_query = "%s where s.genre_id in ( %s ) order by random();" % (songquery, ",".join(['?' for i in xrange(0,len( related_ids ))]))
+                  related_query = "%s where s.genre_id in ( %s )" % (songquery, ",".join(['?' for i in xrange(0,len( related_ids ))]))
                   secondary_results = db.execute(related_query, related_ids).fetchall()
                else:
                   secondary_results = []
+               logging.debug("Secondary results.")
 
-               results = self.m3u(primary_results + secondary_results)
+               related_requests = "select distinct id_tag from genre_x_tag where id_genre in ( %s ) and similarity > 0.80;" %  ",".join(['?' for i in xrange(0,len( ids ))])
+               related_tags = [i[0] for i in db.execute(related_requests, ids).fetchall()]
+               logging.debug("Tags:")
+               
+               tertiary_results = []
+               try:
+                  if related_tags:
+                     tags_requests = "select distinct song_id from song_x_tag where tag_id in ( %s ) and weight >= 50;" % ",".join(['?' for i in xrange(0,len(related_tags))])
+                     tags_results = [i[0] for i in db.execute(tags_requests, related_tags).fetchall()]
+                     if tags_results:
+                        related_query = "%s where s.id in ( %s );" % (songquery, ",".join(['?' for i in xrange(0,len( tags_results ))]))
+                        tertiary_results = db.execute(related_query, tags_results).fetchall()
+               except Exception as e:
+                  logging.debug(e)
+
+               merged_results = list(set(primary_results + secondary_results + tertiary_results))
+               Random().shuffle(merged_results)
+
+               results = self.m3u(merged_results)
 
                self.send_response(200)
             elif items[1] == 'bpm':
@@ -625,8 +661,8 @@ def start_daemon(path, dbpath, md_queue, fd_queue, condition):
 
    THREADS.append(PollAnalyzer(condition, dbpath))
    THREADS[-1].start()
-#   THREADS.append(CatalogThreadingTCPServer(("localhost", 8080), CatalogHTTPRequestHandler, dbpath))
-#   THREADS[-1].serve_forever()
+   THREADS.append(CatalogThreadingTCPServer(("localhost", 8080), CatalogHTTPRequestHandler, dbpath))
+   THREADS[-1].serve_forever()
 
    THREADS[-1].join()
    
