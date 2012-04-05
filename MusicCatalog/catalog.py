@@ -136,7 +136,6 @@ PRAGMA foreign_keys = ON;
 DECODERS = (MP3, FLAC, MP4, MonkeysAudio, Musepack, WavPack, TrueAudio, OggVorbis, OggTheora, OggSpeex, OggFLAC)
 FS_ENCODING = sys.getfilesystemencoding()
 THREADS = []
-logging.basicConfig(filename="/tmp/cata.log",level=logging.DEBUG)
 
 class SubtreeListener(ProcessEvent):
    """ handler for inotify thread events """
@@ -158,19 +157,19 @@ class SubtreeListener(ProcessEvent):
    def process_IN_CLOSE_WRITE(self, evt):
       if evt.name[0] == '.':
          return
-      logging.debug( "IN_CLOSE_WRITE")
+      logging.debug("IN_CLOSE_WRITE %s" % evt.path)
       self.process_event(evt)
 
    def process_IN_MOVED_FROM(self, evt):
       if evt.name[0] == '.':
          return
-      logging.debug( "IN_MOVED_FROM")
+      logging.debug("IN_MOVED_FROM %s" % evt.path)
       self.process_IN_DELETE(evt)
 
    def process_IN_MOVED_TO(self, evt):
       if evt.name[0] == '.':
          return
-      logging.debug( "IN_MOVED_TO")
+      logging.debug("IN_MOVED_TO %s" % evt.path)
       newpath = "%s/%s" % (evt.path, evt.name)
       if os.path.isdir(newpath):
          self.process_IN_ISDIR(evt)
@@ -180,7 +179,7 @@ class SubtreeListener(ProcessEvent):
    def process_IN_ISDIR(self, evt):
       if evt.name[0] == '.':
          return
-      logging.debug( "IN_ISDIR")
+      logging.debug("IN_ISDIR %s" % evt.path)
       newpath = "%s/%s" % (evt.path, evt.name)
       db = dbapi.connect(dbpath)
       #exists = db.execute("select id from song where path like ? limit 1;", ("%s%%" % evt.path,)).fetchone()
@@ -191,7 +190,7 @@ class SubtreeListener(ProcessEvent):
    def process_IN_DELETE(self, evt):
       if evt.name[0] == '.':
          return
-      logging.debug( "IN_DELETE")
+      logging.debug("IN_DELETE %s" % evt.path)
       abspathitem = "%s/%s" % (evt.path, evt.name)
       if abspathitem in (dbpath, "%s-journal" % dbpath):
          return
@@ -211,7 +210,7 @@ class SubtreeListener(ProcessEvent):
             db.execute("delete from song_x_tag where song_id = ?;", s_i)
          db.commit()
       except Exception as e:
-         logging.debug( "OH CRAP CRAP %s " % e)
+         logging.error(e)
          pass
       finally:
          db.close()
@@ -253,7 +252,7 @@ class FiledataThread(threading.Thread):
    daemon = True
 
    def __init__(self, queue, condition, dbpath):
-      threading.Thread.__init__(self)
+      threading.Thread.__init__(self, name="FiledataThread")
       self.queue = queue
       self.condition = condition
       self.dbpath = dbpath
@@ -270,36 +269,37 @@ class FiledataThread(threading.Thread):
          try:
             logging.debug("getting queue...")
             path, title, artist = self.queue.get()
-            logging.debug("done.\n")
-         except Empty:
-            logging.debug("fail.\n")
+         except Empty as e:
+            logging.warning(e)
             continue
          except Exception as e:
-            logging.debug("%s.\n" % e)
+            logging.error("%s." % e)
             pass
          if not path:
             continue
          for i in ('30', '60', '90', '120'):
             try:
-               logging.debug("soxi_process...")
+               logging.info("Analyzing %s file" %s path)
+               logging.debug("soxi_process for %s" % path)
                soxi_process = subprocess.Popen(["/usr/bin/soxi", "-D", path], stdout = subprocess.PIPE, stderr = subprocess.PIPE)
                soxi_output = float(soxi_process.communicate()[0])
-               logging.debug("sox_process...")
+               logging.debug("sox_process for %s" % path)
                sox_process = subprocess.Popen(["/usr/bin/sox", path, "-t", "wav", "/tmp/.stretch.wav", "trim", "0", i], stdout = subprocess.PIPE, stderr = subprocess.PIPE) # well done, dear sox friend. Well done.
                #sox_process.wait()
                sox_process.communicate()
-               logging.debug("bpm_process...")
+               logging.debug("bpm_process for %s" % path)
                bpm_process = subprocess.Popen(["/usr/bin/soundstretch", "/tmp/.stretch.wav", "-bpm", "-quick", "-naa"], stdout = subprocess.PIPE, stderr = subprocess.PIPE)
                bpm_output = bpm_process.communicate()
-               logging.debug("done.\n")
    
                bpm_pattern = re.search ("Detected BPM rate ([0-9]+)", bpm_output[0], re.M)
             except Exception as e:
-               logging.debug(e)
+               logging.error(e)
             if bpm_pattern:
                bpm = float(bpm_pattern.groups()[0])
+               logging.info("Detected bpm %s with %s seconds sampling" % (bpm, i))
                break
             else:
+               logging.warning("No bpm detected")
                bpm = 0.0
 
          self.condition.acquire()
@@ -314,7 +314,7 @@ class LastFMMetadataThread(threading.Thread):
    daemon = True
 
    def __init__(self, queue, condition, dbpath):
-      threading.Thread.__init__(self)
+      threading.Thread.__init__(self, name="LastFMMetadataThread")
       self.daemon = True
       self.queue = queue
       self.condition = condition
@@ -332,18 +332,25 @@ class LastFMMetadataThread(threading.Thread):
       while self.running:
          try:
             path, title, artist = self.queue.get()
-         except Empty:
+         except Empty as e:
+            logging.warning(e)
             continue
-         except:
+         except Exception as e:
+            logging.error(e)
             pass
          if not path:
+            logging.warning("No path provided")
             continue
 
+         logging.info("Getting tags for %s %s" % (artist, title))
          try:
             tags = self.lastfm.get_track(artist, title).get_top_tags()
-         except:
+         except Exception as e:
+            logging.error(e)
             tags = []
          
+         logging.debug("%s tags found" % len(tags))
+
          if not tags:
             continue
 
@@ -392,7 +399,7 @@ class DiscogsMetadataThread(threading.Thread):
    daemon = True
 
    def __init__(self, queue, condition, dbpath):
-      threading.Thread.__init__(self)
+      threading.Thread.__init__(self, name="DiscogsMetadataThread")
       self.daemon = True
       self.queue = queue
       self.condition = condition
@@ -410,13 +417,17 @@ class DiscogsMetadataThread(threading.Thread):
       while self.running:
          try:
             path, title, artist, album  = self.queue.get()
-         except Empty:
+         except Empty as e:
+            logging.warning(e)
             continue
-         except:
+         except Exception as e:
+            logging.error(e)
             pass
          if not path or not album:
+            logging.warning("No path/album name provided")
             continue
 
+         logging.info("Getting infos for %s %s" % (artist, album))
          try:
             conn = HTTPConnection("api.discogs.com", 80)
             conn.request("GET", "/database/search?q=%s&type=release" % (quote(" ".join[artist, album])))
@@ -424,7 +435,6 @@ class DiscogsMetadataThread(threading.Thread):
             if response.status == 200:
                lastdata = json.loads(response.read()).results
                if len(lastdata):
-                  logging.debug("Found informations on discogs")
                   genres = lastdata[0].genre
                   tags = lastdata[0].tags
                else:
@@ -434,6 +444,8 @@ class DiscogsMetadataThread(threading.Thread):
             logging.debug(e)
             tags = []
             genres = []
+
+         logging.debug("%s tags, %s genres found" % (len(tags), len(genres)))
          
          if not tags and not genres:
             continue
@@ -487,7 +499,7 @@ class PollAnalyzer(threading.Thread):
    daemon = True
 
    def __init__(self, condition, dbpath):
-      threading.Thread.__init__(self)
+      threading.Thread.__init__(self, name="PollAnalyzer")
       self.condition = condition
       self.dbpath = dbpath
       self.running = True
@@ -501,6 +513,7 @@ class PollAnalyzer(threading.Thread):
       complete_genres = 0
       while self.running:
          sleep(max(300, sleeptime))
+         logging.info("Performing tag/genres matching analysis")
          db = dbapi.connect(dbpath)
          self.condition.acquire()
          collected_genres = db.execute("select count(id) from genre;").fetchall()
@@ -802,7 +815,8 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
       except Exception as e:
          pass
    if not id3item:
-     return 
+      logging.warning("No ID3v2 informations found")
+      return 
    if 'TITLE' in id3v1item:
       title = id3v1item['TITLE'].strip().lower()
       titleclean = re.sub("[^\w]*", "", title)
@@ -837,7 +851,7 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
       genreclean = re.sub("[^\w]+", "", genre).strip().lower()
       #length = float(id3item['TLEN'])
    except Exception as e:
-      logging.debug(e)
+      logging.error(e)
 
    condition.acquire()
    ar = artist if artist else 'unknown'
@@ -873,8 +887,8 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
       lf_queue.put((abspathitem, title, artist))
       di_queue.put((abspathitem, title, artist, album))
       fd_queue.put((abspathitem, title, artist))
-   except:
-      pass
+   except Exception as e:
+      logging.error(e)
    finally:
       db.commit()
       condition.release()
@@ -906,12 +920,14 @@ def hamming(a, b):
 
 def print_usage(argv):
    print("""
-usage: %s [-h|--help] [-s|--scan] [-d|--daemonize] [-n|--no-recursive] path\n
+usage: %s [-h|--help] [-s|--scan] [-d|--daemonize] [-n|--no-recursive] [-v|--verbosity n]path\n
 \t-h --help           print this help
 \t-s --scan           scan path and prepare db
-\t-d --daemonize      start daemon on path
+\t-l --listen         listen mode on path
+\t-d --daemonize      daemonize "listen mode" on path
 \t-n --no-recursive   do not scan subfolders
 \t-b --no-bpm         do not perform bpm detection (faster)
+\t-v --verbosity      set logging verbosity level
 """ % argv)
    sys.exit(1)
 
@@ -929,7 +945,7 @@ def shutdown(signum, stack):
 
 if __name__ == "__main__":
 
-   opts, args = getopt(sys.argv[1:], "hsdnb", ["help", "scan", "daemonize", "no-recursive", "no-bpm"])
+   opts, args = getopt(sys.argv[1:], "hsldnbv:", ["help", "scan", "listen", "daemonize", "no-recursive", "no-bpm", "verbosity"])
 
    if not opts or not args:
       print_usage(sys.argv[0])
@@ -940,18 +956,24 @@ if __name__ == "__main__":
       recursive = True
       scan = False
       daemon = False
+      listen = False
       bpmdetect = True
-      for opt in opts:
-         if opt[0] in ("-h", "--help"):
+      verbosity = logging.WARNING
+      for opt, arg in opts:
+         if opt in ("-h", "--help"):
             print_usage(sys.argv[0])
-         elif opt[0] in ("-s", "--scan"):
+         elif opt in ("-s", "--scan"):
             scan = True
-         elif opt[0] in ("-d", "--daemonize"):
+         elif opt in ("-l", "--listen"):
+            listen = True
+         elif opt in ("-d", "--daemonize"):
             daemon = True
-         elif opt[0] in ("-n", "--no-recursive"):
+         elif opt in ("-n", "--no-recursive"):
             recursive = False
-         elif opt[0] in ("-b", "--no-bpm"):
+         elif opt in ("-b", "--no-bpm"):
             bpmdetect = False
+         elif opt in ("-v", "--verbosity"):
+            verbosity = [logging.CRITICAL, logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG][int(arg)]
          else:
             perror("reading from command line: %s" % opt[0])
             sys.exit(1)
@@ -965,6 +987,8 @@ if __name__ == "__main__":
          else:
             patharg = arg
             break
+
+      logging.basicConfig(filename="/tmp/cata.log", level=verbosity, format="%(asctime)s %(threadName)s (%(thread)d) %(levelname)s %(message)s")
 
       dbpath = "%s/.%s.sqlite" % (patharg, os.path.basename(patharg))
       prepare = not os.path.exists(dbpath)
@@ -987,10 +1011,11 @@ if __name__ == "__main__":
          THREADS[-2].start()
          THREADS[-3].start()
          start_scan(patharg, db, lastfmqueue, discogsqueue, filedataqueue, condition, recursive)
-      if daemon:
+      if listen:
          signal.signal(signal.SIGTERM, shutdown)
          try:
-            daemonize()
+            if daemon:
+               daemonize()
             THREADS[-1].start()
             THREADS[-2].start()
             THREADS[-3].start()
