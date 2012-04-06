@@ -61,7 +61,7 @@ DBSCHEMA = ( """
 PRAGMA foreign_keys = ON;
 """,
 """create table if not exists db (
-   version text default "0.5",
+   version text default "0.6",
    tree text not null
 );""",
 """create table if not exists artist (
@@ -114,6 +114,12 @@ PRAGMA foreign_keys = ON;
 """create table if not exists song_x_tag (
    song_id references song(id),
    tag_id references tag(id),
+   weight real not null
+);
+""",
+"""create table album_x_genre (
+   album_id references album(id),
+   genre_id references genre(id),
    weight real not null
 );
 """,
@@ -279,7 +285,7 @@ class FiledataThread(threading.Thread):
             continue
          for i in ('30', '60', '90', '120'):
             try:
-               logging.info("Analyzing %s file" %s path)
+               logging.info("Analyzing %s file" % path)
                logging.debug("soxi_process for %s" % path)
                soxi_process = subprocess.Popen(["/usr/bin/soxi", "-D", path], stdout = subprocess.PIPE, stderr = subprocess.PIPE)
                soxi_output = float(soxi_process.communicate()[0])
@@ -430,18 +436,21 @@ class DiscogsMetadataThread(threading.Thread):
          logging.info("Getting infos for %s %s" % (artist, album))
          try:
             conn = HTTPConnection("api.discogs.com", 80)
-            conn.request("GET", "/database/search?q=%s&type=release" % (quote(" ".join[artist, album])))
+            conn.request("GET", "/database/search?q=%s&type=release" % (quote(" ".join([artist, album]))))
             response = conn.getresponse()
             if response.status == 200:
-               lastdata = json.loads(response.read()).results
+               results = json.loads(response.read())
+               logging.debug(results)
+               lastdata = results.results
                if len(lastdata):
+                  logging.debug("%s results found" % len(lastdata))
                   genres = lastdata[0].genre
                   tags = lastdata[0].tags
                else:
                   tags = []
                   genres = []
          except Exception as e:
-            logging.debug(e)
+            logging.error(e)
             tags = []
             genres = []
 
