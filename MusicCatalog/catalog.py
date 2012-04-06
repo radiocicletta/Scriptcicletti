@@ -269,7 +269,6 @@ class FiledataThread(threading.Thread):
 
    def run(self):
 
-      logging.debug("FiledataThread Started")
       self.db = dbapi.connect(self.dbpath)
       while self.running:
          try:
@@ -361,42 +360,46 @@ class LastFMMetadataThread(threading.Thread):
             continue
 
          self.condition.acquire()
-         song_id = self.db.execute("select id from song where path = ?", (path.decode(FS_ENCODING), )).fetchone()[0]
-         known_tags = self.db.execute("select distinct weight, name, nameclean from song_x_tag left join tag on (tag_id = id) where song_id = ?;", (song_id,)).fetchall()
-         
-         for t in tags:
-            alreadytag = False
-            for kt in known_tags:
-               if t.item.name == kt[1] and t.weight != kt[0]:
-                  self.db.execute("update song_x_tag set weight = ? where song_id = ? and tag_id = ?;", (t.weight, song_id, t.item.name))
-                  alreadytag = True
-            if not alreadytag:
-               if re.match("^([a-zA-Z0-9] )+[a-zA-Z0-9]$", t.item.name): # you damned "e l e c t r o n i c" tag.
-                  cleantag = [re.sub("[^a-zA-Z0-9]+", "", t.item.name)]
-               else:
-                  cleantag = re.sub("[^a-zA-Z0-9 ]+", "", t.item.name).strip().lower().split()
+         try:
+            song_id = self.db.execute("select id from song where path = ?", (path.decode(FS_ENCODING), )).fetchone()[0]
+            known_tags = self.db.execute("select distinct weight, name, nameclean from song_x_tag left join tag on (tag_id = id) where song_id = ?;", (song_id,)).fetchall()
+            
+            for t in tags:
+               alreadytag = False
+               for kt in known_tags:
+                  if t.item.name == kt[1] and t.weight != kt[0]:
+                     self.db.execute("update song_x_tag set weight = ? where song_id = ? and tag_id = ?;", (t.weight, song_id, t.item.name))
+                     alreadytag = True
+               if not alreadytag:
+                  if re.match("^([a-zA-Z0-9] )+[a-zA-Z0-9]$", t.item.name): # you damned "e l e c t r o n i c" tag.
+                     cleantag = [re.sub("[^a-zA-Z0-9]+", "", t.item.name)]
+                  else:
+                     cleantag = re.sub("[^a-zA-Z0-9 ]+", "", t.item.name).strip().lower().split()
 
-               savedcleantag = []
-               savedcleantag.extend(cleantag)
-               for i in xrange(len(cleantag), 0):
-                  if len(cleantag[i]) < 3:
-                     cleantag.pop(i)
-                     
-               if len(cleantag) > 6:
-                  cleantag = [" ".join(savedcleantag)] # as a single phrase
+                  savedcleantag = []
+                  savedcleantag.extend(cleantag)
+                  for i in xrange(len(cleantag), 0):
+                     if len(cleantag[i]) < 3:
+                        cleantag.pop(i)
+                        
+                  if len(cleantag) > 6:
+                     cleantag = [" ".join(savedcleantag)] # as a single phrase
 
-               tagcomb = permutations(cleantag, len(cleantag))
-               nameclean = "".join(cleantag)
-               for tc in tagcomb:
-                  similartag = self.db.execute("select nameclean from tag where name like ?;", ("%%%s%%" % "%".join(tc),)).fetchone()
-                  if similartag and len(similartag[0]) == len(nameclean):
-                     nameclean = similartag[0]
-               self.db.execute("insert or ignore into tag (name, nameclean) values (?, ?);", (t.item.name, nameclean))
-               self.db.commit()
-               tagid = self.db.execute("select id from tag where name = ? ", (t.item.name, )).fetchone()[0]
-               self.db.execute("insert into song_x_tag (song_id, tag_id, weight) values (?, ?, ?);", (song_id, tagid, t.weight))
-         self.db.commit()
-         self.condition.release()
+                  tagcomb = permutations(cleantag, len(cleantag))
+                  nameclean = "".join(cleantag)
+                  for tc in tagcomb:
+                     similartag = self.db.execute("select nameclean from tag where name like ?;", ("%%%s%%" % "%".join(tc),)).fetchone()
+                     if similartag and len(similartag[0]) == len(nameclean):
+                        nameclean = similartag[0]
+                  self.db.execute("insert or ignore into tag (name, nameclean) values (?, ?);", (t.item.name, nameclean))
+                  self.db.commit()
+                  tagid = self.db.execute("select id from tag where name = ? ", (t.item.name, )).fetchone()[0]
+                  self.db.execute("insert into song_x_tag (song_id, tag_id, weight) values (?, ?, ?);", (song_id, tagid, t.weight))
+            self.db.commit()
+         except Exception as e:
+            logging.error(e)
+         finally:
+            self.condition.release()
       self.db.close()
 
 class DiscogsMetadataThread(threading.Thread):
@@ -420,6 +423,8 @@ class DiscogsMetadataThread(threading.Thread):
       self.db = dbapi.connect(self.dbpath)
       lastrelease = ""
       lastdata = []
+      lastquery = ""
+      laststatus = 0
       while self.running:
          try:
             path, title, artist, album  = self.queue.get()
@@ -434,18 +439,23 @@ class DiscogsMetadataThread(threading.Thread):
             continue
 
          logging.info("Getting infos for %s %s" % (artist, album))
+         query = "/database/search?q=%s&type=release" % (quote(" ".join([artist, album])))
+         if query == lastquery and laststatus == 200:
+            logging.info("Same request already occurred - skipping")
          try:
             conn = HTTPConnection("api.discogs.com", 80)
-            conn.request("GET", "/database/search?q=%s&type=release" % (quote(" ".join([artist, album]))))
+            conn.request("GET", query)
             response = conn.getresponse()
             if response.status == 200:
+               lastquery = query
+               laststatus = 200
                results = json.loads(response.read())
                logging.debug(results)
-               lastdata = results.results
+               lastdata = results["results"]
                if len(lastdata):
                   logging.debug("%s results found" % len(lastdata))
-                  genres = lastdata[0].genre
-                  tags = lastdata[0].tags
+                  genres = lastdata[0]["genre"]
+                  tags = lastdata[0]["style"]
                else:
                   tags = []
                   genres = []
@@ -454,51 +464,59 @@ class DiscogsMetadataThread(threading.Thread):
             tags = []
             genres = []
 
-         logging.debug("%s tags, %s genres found" % (len(tags), len(genres)))
          
          if not tags and not genres:
             continue
 
+         logging.debug("%s tags, %s genres found" % (len(tags), len(genres)))
+
          self.condition.acquire()
-         song_id = self.db.execute("select id from song where path = ?", (path.decode(FS_ENCODING), )).fetchone()[0]
-         known_tags = self.db.execute("select distinct weight, name, nameclean from song_x_tag left join tag on (tag_id = id) where song_id = ?;", (song_id,)).fetchall()
+         try:
+            album_id = self.db.execute("select album_id from song where path = ?", (path.decode(FS_ENCODING), )).fetchone()[0]
+            known_tags = self.db.execute("select distinct a.weight, g.desc, g.descclean from album_x_genre a left join genre g on (a.genre_id = g.id) where album_id = ?;", (album_id,)).fetchall()
 
-         tagset = set(tags + genres)
-         fixedweight = 1 / len(tagset) * 100
-         
-         for t in tagset: #quite the same as LastFMMetadataThread, except here we use a set
-            alreadytag = False
-            for kt in known_tags:
-               if t == kt[1] and fixedweight < kt[0]:
-                  self.db.execute("update song_x_tag set weight = ? where song_id = ? and tag_id = ?;", (fixedweight, song_id, t))
-                  alreadytag = True
-            if not alreadytag:
-               if re.match("^([a-zA-Z0-9] )+[a-zA-Z0-9]$", t):
-                  cleantag = [re.sub("[^a-zA-Z0-9]+", "", t)]
-               else:
-                  cleantag = re.sub("[^a-zA-Z0-9 ]+", "", t).lower().split()
+            tagset = set(tags + genres)
+            fixedweight = 1 / len(tagset) * 100
+            
+            for t in tagset: #quite the same as LastFMMetadataThread, except here we use a set
+               logging.debug("analyzing genre %s" % t)
+               alreadytag = False
+               for kt in known_tags:
+                  if t == kt[1]:
+                     alreadytag = True
+                     if fixedweight < kt[0]:
+                        self.db.execute("update album_x_genre set weight = ? where album_id = ? and genre_id = ?;", (fixedweight, album_id, t))
+               if not alreadytag:
+                  if re.match("^([a-zA-Z0-9] )+[a-zA-Z0-9]$", t):
+                     cleantag = [re.sub("[^a-zA-Z0-9]+", "", t)]
+                  else:
+                     cleantag = re.sub("[^a-zA-Z0-9 ]+", "", t).lower().split()
 
-               savedcleantag = []
-               savedcleantag.extend(cleantag)
-               for i in xrange(len(cleantag), 0):
-                  if len(cleantag[i]) < 3:
-                     cleantag.pop(i)
-                     
-               if len(cleantag) > 6:
-                  cleantag = [" ".join(savedcleantag)] # as a single phrase
+                  savedcleantag = []
+                  savedcleantag.extend(cleantag)
+                  for i in xrange(len(cleantag), 0):
+                     if len(cleantag[i]) < 3:
+                        cleantag.pop(i)
+                        
+                  if len(cleantag) > 6:
+                     cleantag = [" ".join(savedcleantag)] # as a single phrase
 
-               tagcomb = permutations(cleantag, len(cleantag))
-               nameclean = "".join(cleantag)
-               for tc in tagcomb:
-                  similartag = self.db.execute("select nameclean from tag where name like ?;", ("%%%s%%" % "%".join(tc),)).fetchone()
-                  if similartag and len(similartag[0]) == len(nameclean):
-                     nameclean = similartag[0]
-               self.db.execute("insert or ignore into tag (name, nameclean) values (?, ?);", (t, nameclean))
-               self.db.commit()
-               tagid = self.db.execute("select id from tag where name = ? ", (t, )).fetchone()[0]
-               self.db.execute("insert into song_x_tag (song_id, tag_id, weight) values (?, ?, ?);", (song_id, tagid, fixedweight))
-         self.db.commit()
-         self.condition.release()
+                  tagcomb = permutations(cleantag, len(cleantag))
+                  nameclean = "".join(cleantag)
+                  for tc in tagcomb:
+                     similartag = self.db.execute("select descclean from genre where desc like ?;", ("%%%s%%" % "%".join(tc),)).fetchone()
+                     if similartag and len(similartag[0]) == len(nameclean):
+                        nameclean = similartag[0]
+                  self.db.execute("insert or ignore into genre (desc, descclean) values (?, ?);", (t, nameclean))
+                  self.db.commit()
+                  genreid = self.db.execute("select id from genre where desc = ? ", (t, )).fetchone()[0]
+                  logging.debug("create new association for genre %s on album %s" % (t, album_id))
+                  self.db.execute("insert into album_x_genre (album_id, genre_id, weight) values (?, ?, ?);", (album_id, genreid, fixedweight))
+            self.db.commit()
+         except Exception as e:
+            logging.error(e)
+         finally:
+            self.condition.release()
       self.db.close()
 
 
@@ -803,11 +821,13 @@ def start_scan(path, db, lf_queue, di_queue, fd_queue, condition, depth = 1):
       recentalbums = {}
       recentgenres = {}
 
+      logging.debug(os.listdir(curdir))
       for item in os.listdir(curdir):
          abspathitem = "%s/%s" % (curdir, item)
          if os.path.isdir(abspathitem) and depth:
             scanpath.append(abspathitem)
          else:
+            logging.debug("Collecting informations on %s" % item)
             collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, lf_queue, di_queue, fd_queue, condition)
 
 
@@ -822,7 +842,7 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
          id3v1item = ID3(abspathitem).as_dict()
          break
       except Exception as e:
-         pass
+         logging.error(e)
    if not id3item:
       logging.warning("No ID3v2 informations found")
       return 
