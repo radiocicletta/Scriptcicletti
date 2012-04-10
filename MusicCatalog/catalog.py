@@ -217,7 +217,6 @@ class SubtreeListener(ProcessEvent):
          db.commit()
       except Exception as e:
          logging.error(e)
-         pass
       finally:
          db.close()
          self.condition.release()
@@ -279,7 +278,7 @@ class FiledataThread(threading.Thread):
             continue
          except Exception as e:
             logging.error("%s." % e)
-            pass
+            continue
          if not path:
             continue
          for i in ('30', '60', '90', '120'):
@@ -342,7 +341,7 @@ class LastFMMetadataThread(threading.Thread):
             continue
          except Exception as e:
             logging.error(e)
-            pass
+            continue
          if not path:
             logging.warning("No path provided")
             continue
@@ -433,7 +432,7 @@ class DiscogsMetadataThread(threading.Thread):
             continue
          except Exception as e:
             logging.error(e)
-            pass
+            continue
          if not path or not album:
             logging.warning("No path/album name provided")
             continue
@@ -824,10 +823,10 @@ def start_scan(path, db, lf_queue, di_queue, fd_queue, condition, depth = 1):
       logging.debug(os.listdir(curdir))
       for item in os.listdir(curdir):
          abspathitem = "%s/%s" % (curdir, item)
+         logging.debug("Collecting informations on %s" % item)
          if os.path.isdir(abspathitem) and depth:
             scanpath.append(abspathitem)
          else:
-            logging.debug("Collecting informations on %s" % item)
             collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, lf_queue, di_queue, fd_queue, condition)
 
 
@@ -883,36 +882,48 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
       logging.error(e)
 
    condition.acquire()
-   ar = artist if artist else 'unknown'
-   if not artist in recentartists.keys():
-      if not db.execute("select id from artist where name = ?", (ar,)).fetchone():
-         db.execute("insert into artist(name) values(?)", (ar,))
-         db.commit()
-      recentartists[artist] = db.execute("select id from artist where name = ?", (ar,)).fetchone()[0]
-   condition.release()
-
-   condition.acquire()
-   al = albumclean if albumclean else 'unknown'
-   if not album in recentalbums.keys():
-      if not db.execute("select id from album where titleclean = ?", (al,)).fetchone():
-         db.execute("insert into album(title, titleclean) values(?, ?)", (album, albumclean))
-         db.commit()
-      recentalbums[album] = db.execute("select id from album where titleclean = ?", (al,)).fetchone()[0]
-   condition.release()
-
-   condition.acquire()
-   ge = genre if genre else 'unknown'
-   if not genre in recentgenres.keys():
-      if not db.execute("select id from genre where desc = ?", (ge,)).fetchone():
-         db.execute("insert into genre(desc, descclean) values(?, ?)", (genre, genreclean))
-         db.commit()
-      recentgenres[genre] = db.execute("select id from genre where desc = ?", (ge,)).fetchone()[0]
-   condition.release()
-
-   condition.acquire()
-   db.execute("insert or replace into song(title, titleclean, artist_id, genre_id, album_id, path, length) values (?,?,?,?,?,?,?)", (title, titleclean, recentartists[artist], recentgenres[genre], recentalbums[album], abspathitem.decode(FS_ENCODING), length))
-   logging.debug("collect_metadata putting new artist on queue")
    try:
+      ar = artist if artist else 'unknown'
+      if not artist in recentartists.keys():
+         if not db.execute("select id from artist where name = ?", (ar,)).fetchone():
+            db.execute("insert into artist(name) values(?)", (ar,))
+            db.commit()
+         recentartists[artist] = db.execute("select id from artist where name = ?", (ar,)).fetchone()[0]
+   except Exception as e:
+      logging.error(e)
+   finally:
+      condition.release()
+
+   condition.acquire()
+   try:
+      al = albumclean if albumclean else 'unknown'
+      if not album in recentalbums.keys():
+         if not db.execute("select id from album where titleclean = ?", (al,)).fetchone():
+            db.execute("insert into album(title, titleclean) values(?, ?)", (album, albumclean))
+            db.commit()
+         recentalbums[album] = db.execute("select id from album where titleclean = ?", (al,)).fetchone()[0]
+   except Exception as e:
+      logging.error(e)
+   finally:
+      condition.release()
+
+   condition.acquire()
+   try:
+      ge = genre if genre else 'unknown'
+      if not genre in recentgenres.keys():
+         if not db.execute("select id from genre where desc = ?", (ge,)).fetchone():
+            db.execute("insert into genre(desc, descclean) values(?, ?)", (genre, genreclean))
+            db.commit()
+         recentgenres[genre] = db.execute("select id from genre where desc = ?", (ge,)).fetchone()[0]
+   except Exception as e:
+      logging.error(e)
+   finally:
+      condition.release()
+
+   condition.acquire()
+   try:
+      db.execute("insert or replace into song(title, titleclean, artist_id, genre_id, album_id, path, length) values (?,?,?,?,?,?,?)", (title, titleclean, recentartists[artist], recentgenres[genre], recentalbums[album], abspathitem.decode(FS_ENCODING), length))
+      logging.debug("collect_metadata putting new artist on queue")
       lf_queue.put((abspathitem, title, artist))
       di_queue.put((abspathitem, title, artist, album))
       fd_queue.put((abspathitem, title, artist))
