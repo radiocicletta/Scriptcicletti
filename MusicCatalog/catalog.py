@@ -1,4 +1,4 @@
-#!/usr/bin/env python2.6
+#!/usr/bin/env python2.7
 #
 # A music library managaer and smart aggregator
 # featuring http-based playlist request and automatic generation
@@ -6,51 +6,25 @@
 # requirements: pysqlite, pylast, mutagen, pyinotify
 # optional requirements: sox, soundstretch
 
-__version__ = '0.5.1'
+__version__ = '0.6.1'
 __author__ = 'radiocicletta <radiocicletta@gmail.com>'
 
-from parameters import * # a file parameters.py containing last.fm variables USERNAME and APIKEY
+from parameters import *  # a file parameters.py containing last.fm variables USERNAME and APIKEY
+from metadata.remote import LastFMMetadataThread, DiscogsMetadataThread, FiledataThread
+from metadata.fs import breadth_scan, create_subtreelistener
 import sqlite3 as dbapi
 import sys
 import os
-from mutagen.flac import FLAC
-from mutagen.mp3 import MP3, HeaderNotFoundError
-from mutagen.monkeysaudio import MonkeysAudio
-from mutagen.mp4 import MP4
-from mutagen.musepack import Musepack
-from mutagen.oggflac import OggFLAC
-from mutagen.oggspeex import OggSpeex
-from mutagen.oggtheora import OggTheora
-from mutagen.oggvorbis import OggVorbis
-from mutagen.trueaudio import TrueAudio
-from mutagen.wavpack import WavPack
-from ID3 import ID3
-from collections import defaultdict
+# from collections import defaultdict
 import re
 from getopt import getopt
-import pylast
 import threading
-from Queue import Queue, Empty
-import subprocess
+from Queue import Queue
 import signal
-from itertools import permutations
-from urllib import unquote, quote
-from httplib import HTTPConnection
-import traceback
+# import traceback
 from time import sleep
 import logging
 from random import Random
-
-try:
-    import simplejson as json
-except:
-    import json
-
-try:  #TODO: add FSEvents support
-    from pyinotify import WatchManager, Notifier, ThreadedNotifier, EventsCodes, ProcessEvent, ExcludeFilter, IN_CREATE, IN_MOVED_TO, IN_CLOSE_WRITE, IN_DELETE, IN_ISDIR, IN_MOVED_FROM
-except:
-    pass
-
 from SocketServer import ThreadingTCPServer    # , ForkingTCPServer
 from SimpleHTTPServer import SimpleHTTPRequestHandler
 from StringIO import StringIO
@@ -137,388 +111,7 @@ PRAGMA foreign_keys = ON;
 """insert into album (title, titleclean) values ('unknown', 'unknown') ;"""
 )
 
-DECODERS = (MP3, FLAC, MP4, MonkeysAudio, Musepack, WavPack, TrueAudio, OggVorbis, OggTheora, OggSpeex, OggFLAC)
-FS_ENCODING = sys.getfilesystemencoding()
 THREADS = []
-
-
-class SubtreeListener(ProcessEvent):
-    """ handler for inotify thread events """
-
-    def __init__(self, dbpath, lf_queue, di_queue, fd_queue, condition):
-        self.dbpath = dbpath
-        self.recents = []
-        self.recentartists = {}
-        self.recentalbums = {}
-        self.recentgenres = {}
-        self.recentsongs = {}
-        self.lf_queue = lf_queue
-        self.di_queue = di_queue
-        self.fd_queue = fd_queue
-        self.condition = condition
-        self.cookies = {}
-        ProcessEvent.__init__(self)
-
-    def process_IN_CLOSE_WRITE(self, evt):
-        if evt.name[0] == '.':
-            return
-        logging.debug("IN_CLOSE_WRITE %s" % evt.path)
-        self.process_event(evt)
-
-    def process_IN_MOVED_FROM(self, evt):
-        if evt.name[0] == '.':
-            return
-        logging.debug("IN_MOVED_FROM %s" % evt.path)
-        self.process_IN_DELETE(evt)
-
-    def process_IN_MOVED_TO(self, evt):
-        if evt.name[0] == '.':
-            return
-        logging.debug("IN_MOVED_TO %s" % evt.path)
-        newpath = "%s/%s" % (evt.path, evt.name)
-        if os.path.isdir(newpath):
-            self.process_IN_ISDIR(evt)
-        else:
-            self.process_event(evt)
-
-    def process_IN_ISDIR(self, evt):
-        if evt.name[0] == '.':
-            return
-        logging.debug("IN_ISDIR %s" % evt.path)
-        newpath = "%s/%s" % (evt.path, evt.name)
-        db = dbapi.connect(dbpath)
-        #exists = db.execute("select id from song where path like ? limit 1;", ("%s%%" % evt.path,)).fetchone()
-        #if not exists:
-        start_scan(newpath, db, self.lf_queue, self.di_queue, self.fd_queue, self.condition, True)
-        db.close()
-
-    def process_IN_DELETE(self, evt):
-        if evt.name[0] == '.':
-            return
-        logging.debug("IN_DELETE %s" % evt.path)
-        abspathitem = "%s/%s" % (evt.path, evt.name)
-        if abspathitem in (dbpath, "%s-journal" % dbpath):
-            return
-
-        self.condition.acquire()
-        db = dbapi.connect(dbpath)
-        try:
-            if evt.dir:  # os.path.isdir(abspathitem):
-                songs = db.execute("select id from song where path like ?;", ("%s%%" % abspathitem.decode(FS_ENCODING),))
-                song_id = songs.fetchall()
-                self.recents = []
-            else:
-                songs = db.execute("select id from song where path = ?;", (abspathitem.decode(FS_ENCODING),))
-                song_id = songs.fetchone()
-            for s_i in song_id:
-                db.execute("delete from song where id = ?;", s_i)
-                db.execute("delete from song_x_tag where song_id = ?;", s_i)
-            db.commit()
-        except Exception as e:
-            logging.error(e)
-        finally:
-            db.close()
-            self.condition.release()
-        if abspathitem in self.recents:
-            self.recents.remove(abspathitem)
-
-    def process_event(self, evt):
-        if evt.pathname == self.dbpath:
-            return
-        db = dbapi.connect(dbpath)
-        abspathitem = "%s/%s" % (evt.path, evt.name)
-        if os.path.isdir(abspathitem):
-            start_scan(abspathitem, db, self.lf_queue, self.di_queue, self.fd_queue, self.condition, True)
-        else:
-            if abspathitem in self.recents:
-                db.close()
-                return
-            collect_metadata(abspathitem, db, self.recentartists, self.recentalbums, self.recentgenres, self.lf_queue, self.di_queue, self.fd_queue, self.condition)
-
-            if len(self.recents) >= 20:
-                self.recents.pop(0)
-            self.recents.append(abspathitem)
-
-            if len(self.recentalbums) > 20:
-                self.recentalbums.clear()
-            if len(self.recentgenres) > 20:
-                self.recentgenres.clear()
-            if len(self.recentsongs) > 20:
-                self.recentsongs.clear()
-            if len(self.recentartists) > 20:
-                self.recentartists.clear()
-        db.close()
-
-
-class FiledataThread(threading.Thread):
-    """ slow file analyzer thread. Retrieve song's length and bpm where availble """
-
-    daemon = True
-
-    def __init__(self, queue, condition, dbpath):
-        threading.Thread.__init__(self, name="FiledataThread")
-        self.queue = queue
-        self.condition = condition
-        self.dbpath = dbpath
-        self.running = True
-
-    def stop(self):
-        self.running = False
-
-    def run(self):
-
-        self.db = dbapi.connect(self.dbpath)
-        while self.running:
-            try:
-                logging.debug("getting queue...")
-                path, title, artist = self.queue.get()
-            except Empty as e:
-                logging.warning(e)
-                continue
-            except Exception as e:
-                logging.error("%s." % e)
-                continue
-            if not path:
-                continue
-            for i in ('30', '60', '90', '120'):
-                try:
-                    logging.info("Analyzing %s file" % path)
-                    logging.debug("soxi_process for %s" % path)
-                    soxi_process = subprocess.Popen(["/usr/bin/soxi", "-D", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    soxi_output = float(soxi_process.communicate()[0])
-                    logging.debug("sox_process for %s" % path)
-                    sox_process = subprocess.Popen(["/usr/bin/sox", path, "-t", "wav", "/tmp/.stretch.wav", "trim", "0", i], stdout=subprocess.PIPE, stderr=subprocess.PIPE) # well done, dear sox friend. Well done.
-                    #sox_process.wait()
-                    sox_process.communicate()
-                    logging.debug("bpm_process for %s" % path)
-                    bpm_process = subprocess.Popen(["/usr/bin/soundstretch", "/tmp/.stretch.wav", "-bpm", "-quick", "-naa"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    bpm_output = bpm_process.communicate()
-
-                    bpm_pattern = re.search("Detected BPM rate ([0-9]+)", bpm_output[0], re.M)
-                except Exception as e:
-                    logging.error(e)
-                if bpm_pattern:
-                    bpm = float(bpm_pattern.groups()[0])
-                    logging.info("Detected bpm %s with %s seconds sampling" % (bpm, i))
-                    break
-                else:
-                    logging.warning("No bpm detected")
-                    bpm = 0.0
-
-            self.condition.acquire()
-            self.db.execute("update song set bpm = ?, length = ? where path = ?", (bpm, soxi_output, path.decode(FS_ENCODING)))
-            self.db.commit()
-            self.condition.release()
-        self.db.close()
-
-
-class LastFMMetadataThread(threading.Thread):
-    """ last.fm client Thread. Collect top tags for each song """
-
-    daemon = True
-
-    def __init__(self, queue, condition, dbpath):
-        threading.Thread.__init__(self, name="LastFMMetadataThread")
-        self.daemon = True
-        self.queue = queue
-        self.condition = condition
-        self.dbpath = dbpath
-        self.lastfm = pylast.LastFMNetwork(username=USERNAME)
-        self.lastfm.api_key = APIKEY
-        self.running = True
-
-    def stop(self):
-        self.running = False
-
-    def run(self):
-
-        self.db = dbapi.connect(self.dbpath)
-        while self.running:
-            try:
-                path, title, artist = self.queue.get()
-            except Empty as e:
-                logging.warning(e)
-                continue
-            except Exception as e:
-                logging.error(e)
-                continue
-            if not path:
-                logging.warning("No path provided")
-                continue
-
-            logging.info("Getting tags for %s %s" % (artist, title))
-            try:
-                tags = self.lastfm.get_track(artist, title).get_top_tags()
-            except Exception as e:
-                logging.error(e)
-                tags = []
-
-            logging.debug("%s tags found" % len(tags))
-
-            if not tags:
-                continue
-
-            self.condition.acquire()
-            try:
-                song_id = self.db.execute("select id from song where path = ?", (path.decode(FS_ENCODING), )).fetchone()[0]
-                known_tags = self.db.execute("select distinct weight, name, nameclean from song_x_tag left join tag on (tag_id = id) where song_id = ?;", (song_id,)).fetchall()
-
-                for t in tags:
-                    alreadytag = False
-                    for kt in known_tags:
-                        if t.item.name == kt[1] and t.weight != kt[0]:
-                            self.db.execute("update song_x_tag set weight = ? where song_id = ? and tag_id = ?;", (t.weight, song_id, t.item.name))
-                            alreadytag = True
-                    if not alreadytag:
-                        if re.match("^([a-zA-Z0-9] )+[a-zA-Z0-9]$", t.item.name):  # you damned "e l e c t r o n i c" tag.
-                            cleantag = [re.sub("[^a-zA-Z0-9]+", "", t.item.name)]
-                        else:
-                            cleantag = re.sub("[^a-zA-Z0-9 ]+", "", t.item.name).strip().lower().split()
-
-                        savedcleantag = []
-                        savedcleantag.extend(cleantag)
-                        for i in xrange(len(cleantag), 0):
-                            if len(cleantag[i]) < 3:
-                                cleantag.pop(i)
-
-                        if len(cleantag) > 6:
-                            cleantag = [" ".join(savedcleantag)]  # as a single phrase
-
-                        tagcomb = permutations(cleantag, len(cleantag))
-                        nameclean = "".join(cleantag)
-                        for tc in tagcomb:
-                            similartag = self.db.execute("select nameclean from tag where name like ?;", ("%%%s%%" % "%".join(tc),)).fetchone()
-                            if similartag and len(similartag[0]) == len(nameclean):
-                                nameclean = similartag[0]
-                        self.db.execute("insert or ignore into tag (name, nameclean) values (?, ?);", (t.item.name, nameclean))
-                        self.db.commit()
-                        tagid = self.db.execute("select id from tag where name = ? ", (t.item.name, )).fetchone()[0]
-                        self.db.execute("insert into song_x_tag (song_id, tag_id, weight) values (?, ?, ?);", (song_id, tagid, t.weight))
-                self.db.commit()
-            except Exception as e:
-                logging.error(e)
-            finally:
-                self.condition.release()
-        self.db.close()
-
-
-class DiscogsMetadataThread(threading.Thread):
-    """ Discogs.com client Thread. Search for informations for releases """
-
-    daemon = True
-
-    def __init__(self, queue, condition, dbpath):
-        threading.Thread.__init__(self, name="DiscogsMetadataThread")
-        self.daemon = True
-        self.queue = queue
-        self.condition = condition
-        self.dbpath = dbpath
-        self.running = True
-
-    def stop(self):
-        self.running = False
-
-    def run(self):
-
-        self.db = dbapi.connect(self.dbpath)
-        lastrelease = ""
-        lastdata = []
-        lastquery = ""
-        laststatus = 0
-        while self.running:
-            try:
-                path, title, artist, album = self.queue.get()
-            except Empty as e:
-                logging.warning(e)
-                continue
-            except Exception as e:
-                logging.error(e)
-                continue
-            if not path or not album:
-                logging.warning("No path/album name provided")
-                continue
-
-            logging.info("Getting infos for %s %s" % (artist, album))
-            try:
-                query = u"/database/search?q=%s&type=release" % (quote(" ".join([artist, album])))
-                logging.info(query)
-                if query == lastquery and laststatus == 200:
-                    logging.info("Same request already occurred - skipping")
-
-                conn = HTTPConnection("api.discogs.com", 80)
-                conn.request("GET", query)
-                response = conn.getresponse()
-                if response.status == 200:
-                    lastquery = query
-                    laststatus = 200
-                    results = json.loads(response.read())
-                    logging.debug(results)
-                    lastdata = results["results"]
-                    if len(lastdata):
-                        logging.debug("%s results found" % len(lastdata))
-                        genres = lastdata[0]["genre"]
-                        tags = lastdata[0]["style"]
-                    else:
-                        tags = []
-                        genres = []
-            except Exception as e:
-                logging.error(e)
-                tags = []
-                genres = []
-
-            if not tags and not genres:
-                continue
-
-            logging.debug("%s tags, %s genres found" % (len(tags), len(genres)))
-
-            self.condition.acquire()
-            try:
-                album_id = self.db.execute("select album_id from song where path = ?", (path.decode(FS_ENCODING), )).fetchone()[0]
-                known_tags = self.db.execute("select distinct a.weight, g.desc, g.descclean from album_x_genre a left join genre g on (a.genre_id = g.id) where album_id = ?;", (album_id,)).fetchall()
-
-                tagset = set(tags + genres)
-                fixedweight = 1 / len(tagset) * 100
-
-                for t in tagset:  # quite the same as LastFMMetadataThread, except here we use a set
-                    logging.debug("analyzing genre %s" % t)
-                    alreadytag = False
-                    for kt in known_tags:
-                        if t == kt[1]:
-                            alreadytag = True
-                            if fixedweight < kt[0]:
-                                self.db.execute("update album_x_genre set weight = ? where album_id = ? and genre_id = ?;", (fixedweight, album_id, t))
-                    if not alreadytag:
-                        if re.match("^([a-zA-Z0-9] )+[a-zA-Z0-9]$", t):
-                            cleantag = [re.sub("[^a-zA-Z0-9]+", "", t)]
-                        else:
-                            cleantag = re.sub("[^a-zA-Z0-9 ]+", "", t).lower().split()
-
-                        savedcleantag = []
-                        savedcleantag.extend(cleantag)
-                        for i in xrange(len(cleantag), 0):
-                            if len(cleantag[i]) < 3:
-                                cleantag.pop(i)
-
-                        if len(cleantag) > 6:
-                            cleantag = [" ".join(savedcleantag)]  # as a single phrase
-
-                        tagcomb = permutations(cleantag, len(cleantag))
-                        nameclean = "".join(cleantag)
-                        for tc in tagcomb:
-                            similartag = self.db.execute("select descclean from genre where desc like ?;", ("%%%s%%" % "%".join(tc),)).fetchone()
-                            if similartag and len(similartag[0]) == len(nameclean):
-                                nameclean = similartag[0]
-                        self.db.execute("insert or ignore into genre (desc, descclean) values (?, ?);", (t, nameclean))
-                        self.db.commit()
-                        genreid = self.db.execute("select id from genre where desc = ? ", (t, )).fetchone()[0]
-                        logging.debug("create new association for genre %s on album %s" % (t, album_id))
-                        self.db.execute("insert into album_x_genre (album_id, genre_id, weight) values (?, ?, ?);", (album_id, genreid, fixedweight))
-                self.db.commit()
-            except Exception as e:
-                logging.error(e)
-            finally:
-                self.condition.release()
-        self.db.close()
 
 
 class PollAnalyzer(threading.Thread):
@@ -539,6 +132,44 @@ class PollAnalyzer(threading.Thread):
 
         sleeptime = 600
         complete_genres = 0
+
+        def calcsimilarity(known, table, id1, id2, known_genres):
+            splitted_genre = re.split("[/,;]", known_genres[i][1])
+            ret = False
+            for j in xrange(0, len(known)):
+                if i == j:
+                    continue
+                if known_genres[i][2] == known[j][2]:
+                    similarity = 1.0
+                else:
+                    compared_genre = re.split("[/,;]", known[j][1])
+                    distance = {}
+                    sametags = 0
+                    for a in splitted_genre:
+                        if not a:
+                            continue
+                        for b in compared_genre:
+                            if not b or b in distance:
+                                continue
+                            if len(a) == len(b):
+                                h = hamming(a, b) / float(len(a))
+                                if h:
+                                    distance[b] = h
+                                else:
+                                    sametags = sametags + 1
+                            else:
+                                distance[b] = levenshtein(a, b) / float(max(len(a), len(b)))
+                    if distance:
+                        # geometric mean + weighted equal tags
+                        similarity = 1.0 - (reduce(lambda x, y: x * y, distance.values())) ** (1.0 / len(distance)) + (sametags / (sametags + len(distance)))
+                    else:
+                        similarity = 0.0
+                if similarity > 0.33:
+                    if not db.execute("select * from %s  where %s  = ? and %s = ?" % (table, id1, id2), (known_genres[i][0], known[j][0])).fetchall():
+                        db.execute("insert into %s (%s, %s, similarity) values ( ?, ?, ?)" % (table, id1, id2), (known_genres[i][0], known[j][0], similarity))
+                        ret = True
+            return ret
+
         while self.running:
             sleep(max(300, sleeptime))
             logging.info("Performing tag/genres matching analysis")
@@ -551,8 +182,10 @@ class PollAnalyzer(threading.Thread):
 
             if genres_count == 0:
                 sleeptime = (sleeptime + 6) % 36
+                logging.debug("New Sleep time: %s Secs" % sleeptime)
             else:
                 sleeptime = sleeptime / 2
+                logging.debug("New Sleep time: %s Secs" % sleeptime)
                 self.condition.acquire()
                 known_genres = db.execute("select distinct id, desc, descclean from genre").fetchall()
                 known_tags = db.execute("select distinct id, name, nameclean from tag").fetchall()
@@ -561,47 +194,11 @@ class PollAnalyzer(threading.Thread):
                 for i in xrange(0, len(known_genres)):
                     if not self.running:
                         break
-                    splitted_genre = re.split("[/,;]", known_genres[i][1])
                     self.condition.acquire()
 
-                    def calcsimilarity(known, table, id1, id2):
-                        ret = False
-                        for j in xrange(0, len(known)):
-                            if i == j:
-                                continue
-                            if known_genres[i][2] == known[j][2]:
-                                similarity = 1.0
-                            else:
-                                compared_genre = re.split("[/,;]", known[j][1])
-                                distance = {}
-                                sametags = 0
-                                for a in splitted_genre:
-                                    if not a:
-                                        continue
-                                    for b in compared_genre:
-                                        if not b or b in distance:
-                                            continue
-                                        if len(a) == len(b):
-                                            h = hamming(a, b) / float(len(a))
-                                            if h:
-                                                distance[b] = h
-                                            else:
-                                                sametags = sametags + 1
-                                        else:
-                                            distance[b] = levenshtein(a, b) / float(max(len(a), len(b)))
-                                if distance:
-                                    # geometric mean + weighted equal tags
-                                    similarity = 1.0 - (reduce(lambda x, y: x * y, distance.values())) ** (1.0 / len(distance)) + (sametags / (sametags + len(distance)))
-                                else:
-                                    similarity = 0.0
-                            if similarity > 0.33:
-                                if not db.execute("select * from %s  where %s  = ? and %s = ?" % (table, id1, id2), (known_genres[i][0], known[j][0])).fetchall():
-                                    db.execute("insert into %s (%s, %s, similarity) values ( ?, ?, ?)" % (table, id1, id2), (known_genres[i][0], known[j][0], similarity))
-                                    ret = True
-                        return ret
-
-                    if calcsimilarity(known_genres, "genre_x_genre", "id_genre", "id_related_genre") or calcsimilarity(known_tags, "genre_x_tag", "id_genre", "id_tag"):
+                    if calcsimilarity(known_genres, "genre_x_genre", "id_genre", "id_related_genre", known_genres) or calcsimilarity(known_tags, "genre_x_tag", "id_genre", "id_tag", known_genres):
                         db.commit()
+
                     complete_genres = db.execute("select count(id) from genre;").fetchall()[0][0]
                     self.condition.release()
                 sleep(sleeptime)
@@ -792,14 +389,8 @@ def start_daemon(path, dbpath, lf_queue, di_queue, fd_queue, condition):
     """ installs a subtree listener and wait for events """
     os.nice(19)
 
-    wm_auto = WatchManager()
-    subtreemask = IN_CLOSE_WRITE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_ISDIR
-    excludefilter = ExcludeFilter(["(.*)sqlite"])
-    notifier_sb = ThreadedNotifier(wm_auto, SubtreeListener(dbpath, lf_queue, di_queue, fd_queue, condition))
-    notifier_sb.start()
+    notifier_sb, wdd_sb = create_subtreelistener(path, dbpath, lf_queue, di_queue, fd_queue, condition)
     THREADS.append(notifier_sb)
-
-    wdd_sb = wm_auto.add_watch(path, subtreemask, auto_add=True, rec=True, exclude_filter=excludefilter)
 
     THREADS.append(PollAnalyzer(condition, dbpath))
     THREADS[-1].start()
@@ -810,164 +401,10 @@ def start_daemon(path, dbpath, lf_queue, di_queue, fd_queue, condition):
 
 
 def start_scan(path, db, lf_queue, di_queue, fd_queue, condition, depth=1):
-    """ Breadth scan a subtree """
-
-    scanpath = [path, ]
-
-    while len(scanpath):
-        curdir = scanpath.pop()
-        recentartists = {}
-        recentsong = {}
-        recentalbums = {}
-        recentgenres = {}
-
-        logging.debug(os.listdir(curdir))
-        for item in os.listdir(curdir):
-            abspathitem = "%s/%s" % (curdir, item)
-            logging.debug("Collecting informations on %s" % item)
-            if os.path.isdir(abspathitem) and depth:
-                scanpath.append(abspathitem)
-            else:
-                collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, lf_queue, di_queue, fd_queue, condition)
+    breadth_scan(path, db, lf_queue, di_queue, fd_queue, condition, depth)
 
 
-def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, lf_queue, di_queue, fd_queue, condition):
-    """ id3 tags retriever """
-
-    id3item = None
-    id3v1item = {'TITLE': '', 'ARTIST': '', 'ALBUM': '', 'GENRE': ''}
-    for decoder in DECODERS:
-        try:
-            id3item = decoder(abspathitem)
-            id3v1item = ID3(abspathitem).as_dict()
-            break
-        except Exception as e:
-            logging.error(e)
-    if not id3item:
-        logging.warning("No ID3v2 informations found")
-        return
-    if 'TITLE' in id3v1item:
-        title = id3v1item['TITLE'].strip().lower()
-        titleclean = re.sub("[^\w]*", "", title)
-    else:
-        title = "unknown"
-        titleclean = "unknown"
-    if 'ARTIST' in id3v1item:
-        artist = id3v1item['ARTIST'].strip().lower()
-    else:
-        artist = "unknown"
-    if 'ALBUM' in id3v1item:
-        album = id3v1item['ALBUM'].strip().lower()
-        albumclean = re.sub("[^\w]*", "", album)
-    else:
-        album = "unknown"
-        albumclean = "unknown"
-    if 'GENRE' in id3v1item:
-        genre = id3v1item['GENRE'].strip().lower()
-        genreclean = re.sub("[^\w]+", "", genre).strip().lower()
-    else:
-        genre = "unknown"
-        genreclean = "unknown"
-    length = 0.0
-
-    try:
-        title = " ".join(id3item['TIT2'].text).strip().lower()
-    except Exception as e:
-        logging.error(e)
-    try:
-        titleclean = re.sub("[^\w]*", "", title)
-    except Exception as e:
-        logging.error(e)
-    try:
-        artist = " ".join(id3item['TPE1'].text).strip().lower()
-    except Exception as e:
-        logging.error(e)
-    try:
-        album = " ".join(id3item['TALB'].text).strip().lower()
-    except Exception as e:
-        logging.error(e)
-    try:
-        albumclean = re.sub("[^\w]*", "", album)
-    except Exception as e:
-        logging.error(e)
-    try:
-        genre = " ".join(id3item['TCON'].text).strip().lower()
-    except Exception as e:
-        logging.error(e)
-    try:
-        genreclean = re.sub("[^\w]+", "", genre).strip().lower()
-    except Exception as e:
-        logging.error(e)
-    try:
-        length = float(id3item['TLEN'])
-    except Exception as e:
-        logging.error(e)
-
-    condition.acquire()
-    try:
-        ar = artist if artist else 'unknown'
-        if not artist in recentartists.keys():
-            if not db.execute("select id from artist where name = ?", (ar,)).fetchone():
-                db.execute("insert into artist(name) values(?)", (ar,))
-                db.commit()
-            recentartists[artist] = db.execute("select id from artist where name = ?", (ar,)).fetchone()[0]
-    except Exception as e:
-        logging.error(e)
-    finally:
-        condition.release()
-
-    condition.acquire()
-    try:
-        al = albumclean if albumclean else 'unknown'
-        if not album in recentalbums.keys():
-            if not db.execute("select id from album where titleclean = ?", (al,)).fetchone():
-                db.execute("insert into album(title, titleclean) values(?, ?)", (album, albumclean))
-                db.commit()
-            recentalbums[album] = db.execute("select id from album where titleclean = ?", (al,)).fetchone()[0]
-    except Exception as e:
-        logging.error(e)
-    finally:
-        condition.release()
-
-    condition.acquire()
-    try:
-        ge = genre if genre else 'unknown'
-        if not genre in recentgenres.keys():
-            if not db.execute("select id from genre where desc = ?", (ge,)).fetchone():
-                db.execute("insert into genre(desc, descclean) values(?, ?)", (genre, genreclean))
-                db.commit()
-            recentgenres[genre] = db.execute("select id from genre where desc = ?", (ge,)).fetchone()[0]
-    except Exception as e:
-        logging.error(e)
-    finally:
-        condition.release()
-
-    condition.acquire()
-    try:
-        db.execute("insert or replace into song(title, titleclean, artist_id, genre_id, album_id, path, length) values (?,?,?,?,?,?,?)", (title, titleclean, recentartists[artist], recentgenres[genre], recentalbums[album], abspathitem.decode(FS_ENCODING), length))
-
-        logging.debug("collect_metadata putting new artist on queue")
-        if not lf_queue.full():
-            lf_queue.put_nowait((abspathitem, title, artist))
-        else:
-            lf_queue.put((abspathitem, title, artist), block=True)
-        if not di_queue.full():
-            di_queue.put_nowait((abspathitem, title, artist, album))
-        else:
-            di_queue.put((abspathitem, title, artist, album), block=True)
-        if not fd_queue.full():
-            fd_queue.put_nowait((abspathitem, title, artist))
-        else:
-            fd_queue.put((abspathitem, title, artist), block=True)
-
-    except Exception as e:
-        logging.error(e)
-    finally:
-        db.commit()
-        condition.release()
-
-
-def levenshtein(a ,b):  # Dr. levenshtein, i presume.
+def levenshtein(a, b):  # Dr. levenshtein, i presume.
     "Calculates the Levenshtein distance between a and b."
     n, m = len(a), len(b)
     if n > m:
