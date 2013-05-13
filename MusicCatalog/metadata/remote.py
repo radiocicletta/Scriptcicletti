@@ -10,6 +10,7 @@ import subprocess
 import sqlite3 as dbapi
 import logging
 import sys
+import os
 
 try:
     import simplejson as json
@@ -30,6 +31,12 @@ class FiledataThread(threading.Thread):
         self.condition = condition
         self.dbpath = dbpath
         self.running = True
+        if os.path.exists('/usr/bin/soxi'):
+            self.soxi = True
+        if os.path.exists('/usr/bin/sox'):
+            self.sox = True
+        if os.path.exists('/usr/bin/soundstretch'):
+            self.soundstretch = True
 
     def stop(self):
         self.running = False
@@ -50,20 +57,25 @@ class FiledataThread(threading.Thread):
             if not path:
                 continue
             for i in ('30', '60', '90', '120'):
+                bpm_pattern = None
+                soxi_output = 0
                 try:
                     logging.info("Analyzing %s file" % path)
-                    logging.debug("soxi_process for %s" % path)
-                    soxi_process = subprocess.Popen(["/usr/bin/soxi", "-D", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    soxi_output = float(soxi_process.communicate()[0])
-                    logging.debug("sox_process for %s" % path)
-                    sox_process = subprocess.Popen(["/usr/bin/sox", path, "-t", "wav", "/tmp/.stretch.wav", "trim", "0", i], stdout=subprocess.PIPE, stderr=subprocess.PIPE) # well done, dear sox friend. Well done.
-                    #sox_process.wait()
-                    sox_process.communicate()
-                    logging.debug("bpm_process for %s" % path)
-                    bpm_process = subprocess.Popen(["/usr/bin/soundstretch", "/tmp/.stretch.wav", "-bpm", "-quick", "-naa"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    bpm_output = bpm_process.communicate()
+                    if self.soxi:
+                        logging.debug("soxi_process for %s" % path)
+                        soxi_process = subprocess.Popen(["/usr/bin/soxi", "-D", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        soxi_output = float(soxi_process.communicate()[0])
+                    if self.sox:
+                        logging.debug("sox_process for %s" % path)
+                        sox_process = subprocess.Popen(["/usr/bin/sox", path, "-t", "wav", "/tmp/.stretch.wav", "trim", "0", i], stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # well done, dear sox friend. Well done.
+                        # sox_process.wait()
+                        sox_process.communicate()
+                    if self.soundstretch:
+                        logging.debug("bpm_process for %s" % path)
+                        bpm_process = subprocess.Popen(["/usr/bin/soundstretch", "/tmp/.stretch.wav", "-bpm", "-quick", "-naa"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        bpm_output = bpm_process.communicate()
 
-                    bpm_pattern = re.search("Detected BPM rate ([0-9]+)", bpm_output[0], re.M)
+                        bpm_pattern = re.search("Detected BPM rate ([0-9]+)", bpm_output[0], re.M)
                 except Exception as e:
                     logging.error(e)
                 if bpm_pattern:

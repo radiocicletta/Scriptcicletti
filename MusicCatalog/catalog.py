@@ -6,12 +6,13 @@
 # requirements: pysqlite, pylast, mutagen, pyinotify
 # optional requirements: sox, soundstretch
 
-__version__ = '0.6.1'
+__version__ = '0.7.0'
 __author__ = 'radiocicletta <radiocicletta@gmail.com>'
 
 from parameters import *  # a file parameters.py containing last.fm variables USERNAME and APIKEY
 from metadata.remote import LastFMMetadataThread, DiscogsMetadataThread, FiledataThread
-from metadata.fs import breadth_scan, create_subtreelistener
+from metadata.fsutil import breadth_scan
+from metadata.fs import create_subtreelistener
 import sqlite3 as dbapi
 import sys
 import os
@@ -389,7 +390,7 @@ def start_daemon(path, dbpath, lf_queue, di_queue, fd_queue, condition):
     """ installs a subtree listener and wait for events """
     os.nice(19)
 
-    notifier_sb, wdd_sb = create_subtreelistener(path, dbpath, lf_queue, di_queue, fd_queue, condition)
+    notifier_sb = create_subtreelistener(path, dbpath, lf_queue, di_queue, fd_queue, condition)
     THREADS.append(notifier_sb)
 
     THREADS.append(PollAnalyzer(condition, dbpath))
