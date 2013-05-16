@@ -34,7 +34,7 @@ DBSCHEMA = ("""
 PRAGMA foreign_keys = ON;
 """,
 """create table if not exists db (
-    version text default "0.6",
+    version text default "0.6.1",
     tree text not null
 );""",
 """create table if not exists artist (
@@ -62,7 +62,7 @@ PRAGMA foreign_keys = ON;
 """,
 """create table if not exists genre (
     id integer primary key asc autoincrement,
-    desc text not null,
+    desc text unique not null,
     descclean text not null,
     weight real not null default 1,
     bpm real,
@@ -167,7 +167,7 @@ class PollAnalyzer(threading.Thread):
                         similarity = 0.0
                 if similarity > 0.33:
                     if not db.execute("select * from %s  where %s  = ? and %s = ?" % (table, id1, id2), (known_genres[i][0], known[j][0])).fetchall():
-                        db.execute("insert into %s (%s, %s, similarity) values ( ?, ?, ?)" % (table, id1, id2), (known_genres[i][0], known[j][0], similarity))
+                        db.execute("insert or ignore into %s (%s, %s, similarity) values ( ?, ?, ?)" % (table, id1, id2), (known_genres[i][0], known[j][0], similarity))
                         ret = True
             return ret
 
