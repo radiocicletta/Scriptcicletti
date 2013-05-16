@@ -31,12 +31,9 @@ class FiledataThread(threading.Thread):
         self.condition = condition
         self.dbpath = dbpath
         self.running = True
-        if os.path.exists('/usr/bin/soxi'):
-            self.soxi = True
-        if os.path.exists('/usr/bin/sox'):
-            self.sox = True
-        if os.path.exists('/usr/bin/soundstretch'):
-            self.soundstretch = True
+        self.soxi = os.path.exists('/usr/bin/soxi')
+        self.sox = os.path.exists('/usr/bin/sox')
+        self.soundstretch = os.path.exists('/usr/bin/soundstretch')
 
     def stop(self):
         self.running = False
@@ -173,7 +170,8 @@ class LastFMMetadataThread(threading.Thread):
                                 nameclean = similartag[0]
                         self.db.execute("insert or ignore into tag (name, nameclean) values (?, ?);", (t.item.name, nameclean))
                         self.db.commit()
-                        tagid = self.db.execute("select id from tag where name = ? ", (t.item.name, )).fetchone()[0]
+                        tagid = self.db.execute("select last_insert_rowid()").fetchone()[0]
+                        # tagid = self.db.execute("select id from tag where name = ? ", (t.item.name, )).fetchone()[0]
                         self.db.execute("insert into song_x_tag (song_id, tag_id, weight) values (?, ?, ?);", (song_id, tagid, t.weight))
                 self.db.commit()
             except Exception as e:
@@ -291,7 +289,8 @@ class DiscogsMetadataThread(threading.Thread):
                                 nameclean = similartag[0]
                         self.db.execute("insert or ignore into genre (desc, descclean) values (?, ?);", (t, nameclean))
                         self.db.commit()
-                        genreid = self.db.execute("select id from genre where desc = ? ", (t, )).fetchone()[0]
+                        genreid = self.db.execute("select last_insert_rowid()").fetchone()[0]
+                        # genreid = self.db.execute("select id from genre where desc = ? ", (t, )).fetchone()[0]
                         logging.debug("create new association for genre %s on album %s" % (t, album_id))
                         self.db.execute("insert into album_x_genre (album_id, genre_id, weight) values (?, ?, ?);", (album_id, genreid, fixedweight))
                 self.db.commit()

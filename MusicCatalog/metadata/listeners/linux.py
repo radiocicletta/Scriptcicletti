@@ -76,10 +76,11 @@ class InotifySubtreeListener(SubtreeListener, ProcessEvent):
                 self.recents = []
             else:
                 songs = db.execute("select id from song where path = ?;", (abspathitem.decode(FS_ENCODING),))
-                song_id = songs.fetchone()
-            for s_i in song_id:
-                db.execute("delete from song where id = ?;", s_i)
-                db.execute("delete from song_x_tag where song_id = ?;", s_i)
+                song_id = [songs.fetchone()]
+            if song_id and song_id[0]:
+                for s_i in song_id:
+                    db.execute("delete from song where id = ?;", s_i)
+                    db.execute("delete from song_x_tag where song_id = ?;", s_i)
             db.commit()
         except Exception as e:
             logging.error(e)

@@ -7,6 +7,7 @@ import os
 import sys
 import select
 import logging
+import re
 FS_ENCODING = sys.getfilesystemencoding()
 
 
@@ -18,6 +19,7 @@ class FseventsThread(Observer):
 
     def observe(self, path, excludelist=[]):
         stream = Stream(self.listener, path, file_events=True)
+        self.exclude = excludelist
         self.schedule(stream)
 
 
@@ -72,17 +74,19 @@ class FseventsSubtreeListener(SubtreeListener):
             self.condition.acquire()
             db = dbapi.connect(self.dbpath)
             try:
-                if  os.path.isdir(evt.name):
+                songs = db.execute("select id from song where path = ?;", (evt.name.decode(FS_ENCODING),))
+                song_id = [songs.fetchone()]
+                if not song_id[0]:
+                    logging.debug("DELETION DIRECTORY (?): %s" % evt.name)
                     songs = db.execute("select id from song where path like ?;", ("%s%%" % evt.name.decode(FS_ENCODING),))
                     song_id = songs.fetchall()
                     self.recents = []
-                else:
-                    songs = db.execute("select id from song where path = ?;", (evt.name.decode(FS_ENCODING),))
-                    song_id = songs.fetchone()
-                for s_i in song_id:
-                    db.execute("delete from song where id = ?;", s_i)
-                    db.execute("delete from song_x_tag where song_id = ?;", s_i)
-                db.commit()
+                if song_id and song_id[0]:
+                    logging.debug("SONG_ID: %s" % song_id)
+                    for s_i in song_id:
+                        db.execute("delete from song where id = ?;", s_i)
+                        db.execute("delete from song_x_tag where song_id = ?;", s_i)
+                    db.commit()
             except Exception as e:
                 logging.error(e)
             finally:

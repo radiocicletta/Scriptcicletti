@@ -24,15 +24,20 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
     """ id3 tags retriever """
 
     id3item = None
-    id3v1item = {'TITLE': '', 'ARTIST': '', 'ALBUM': '', 'GENRE': ''}
+    id3v1item = {}
     id3v1 = False
+    id3v2 = False
     for decoder in DECODERS:
         try:
             id3item = decoder(abspathitem)
-            id3v1item = ID3(abspathitem).as_dict()
             break
         except Exception as e:
             logging.error(e)
+    try:
+        id3v1item = ID3(abspathitem).as_dict()
+    except Exception as e:
+        logging.error(e)
+
     if 'TITLE' in id3v1item:
         title = id3v1item['TITLE'].strip().lower()
         titleclean = re.sub("[^\w]*", "", title)
@@ -66,6 +71,7 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
 
     try:
         title = " ".join(id3item['TIT2'].text).strip().lower()
+        id3v2 = True
     except Exception as e:
         logging.error(e)
     try:
@@ -74,10 +80,12 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         logging.error(e)
     try:
         artist = " ".join(id3item['TPE1'].text).strip().lower()
+        id3v2 = True
     except Exception as e:
         logging.error(e)
     try:
         album = " ".join(id3item['TALB'].text).strip().lower()
+        id3v2 = True
     except Exception as e:
         logging.error(e)
     try:
@@ -86,6 +94,7 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         logging.error(e)
     try:
         genre = " ".join(id3item['TCON'].text).strip().lower()
+        id3v2 = True
     except Exception as e:
         logging.error(e)
     try:
@@ -96,6 +105,9 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         length = float(id3item['TLEN'])
     except Exception as e:
         logging.error(e)
+    if not id3v2:
+        logging.warning("No ID3v2 informations found")
+        return
 
     condition.acquire()
     try:
@@ -128,7 +140,7 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         ge = genre if genre else 'unknown'
         if not genre in recentgenres.keys():
             if not db.execute("select id from genre where desc = ?", (ge,)).fetchone():
-                db.execute("insert into genre(desc, descclean) values(?, ?)", (genre, genreclean))
+                db.execute("insert or ignore into genre(desc, descclean) values(?, ?)", (genre, genreclean))
                 db.commit()
             recentgenres[genre] = db.execute("select id from genre where desc = ?", (ge,)).fetchone()[0]
     except Exception as e:
