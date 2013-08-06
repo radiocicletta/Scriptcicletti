@@ -3,3 +3,4 @@ mutagen
 pyinotify
 -e git+http://github.com/malthe/macfsevents@92966e840aa464872e5ccca3be0bd5c340f14eb3#egg=MacFSEvents
 http://sourceforge.net/projects/id3-py/files/latest/download
+musicbrainzngs

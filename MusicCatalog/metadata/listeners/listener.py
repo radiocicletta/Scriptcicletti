@@ -8,16 +8,14 @@ FS_ENCODING = sys.getfilesystemencoding()
 
 class SubtreeListener():
 
-    def __init__(self, dbpath, lf_queue, di_queue, fd_queue, condition):
+    def __init__(self, dbpath, queues, condition):
         self.dbpath = dbpath
         self.recents = []
         self.recentartists = {}
         self.recentalbums = {}
         self.recentgenres = {}
         self.recentsongs = {}
-        self.lf_queue = lf_queue
-        self.di_queue = di_queue
-        self.fd_queue = fd_queue
+        self.queues = queues
         self.condition = condition
         self.cookies = {}
 
@@ -25,13 +23,13 @@ class SubtreeListener():
 
         db = dbapi.connect(self.dbpath)
         if os.path.isdir(abspathitem):
-            breadth_scan(abspathitem, db, self.lf_queue, self.di_queue, self.fd_queue, self.condition, True)
+            breadth_scan(abspathitem, db, self.queues, self.condition, True)
         else:
             if abspathitem in self.recents:
                 db.close()
                 return
             logging.debug('Collecting metadata')
-            collect_metadata(abspathitem, db, self.recentartists, self.recentalbums, self.recentgenres, self.lf_queue, self.di_queue, self.fd_queue, self.condition)
+            collect_metadata(abspathitem, db, self.recentartists, self.recentalbums, self.recentgenres, self.queues, self.condition)
 
             if len(self.recents) >= 20:
                 self.recents.pop(0)

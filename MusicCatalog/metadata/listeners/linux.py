@@ -22,8 +22,8 @@ class InotifyThread(ThreadedNotifier):
 class InotifySubtreeListener(SubtreeListener, ProcessEvent):
     """ handler for inotify thread events """
 
-    def __init__(self, dbpath, lf_queue, di_queue, fd_queue, condition):
-        SubtreeListener.__init__(self, dbpath, lf_queue, di_queue, fd_queue, condition)
+    def __init__(self, dbpath, queues, condition):
+        SubtreeListener.__init__(self, dbpath, queues, condition)
         ProcessEvent.__init__(self)
 
     def process_IN_CLOSE_WRITE(self, evt):

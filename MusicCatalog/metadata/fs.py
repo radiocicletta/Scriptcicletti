@@ -5,9 +5,9 @@ if sys.platform.startswith('darwin'):
     from metadata.listeners.osx import FseventsSubtreeListener as SubtreeListener, FseventsThread as FSThread
 
 
-def create_subtreelistener(path, dbpath, lf_queue, di_queue, fd_queue, condition):
+def create_subtreelistener(path, dbpath, queues, condition):
     """ create a subtree listener """
-    listener = SubtreeListener(dbpath, lf_queue, di_queue, fd_queue, condition).get_handler()
+    listener = SubtreeListener(dbpath, queues, condition).get_handler()
     thread = FSThread(listener)
     thread.start()
     thread.observe(path, excludelist=["(.*)sqlite"])

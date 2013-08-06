@@ -11,6 +11,9 @@ import sqlite3 as dbapi
 import logging
 import sys
 import os
+# import musicbrainzgs
+from time import time
+from utils import hamming, levenshtein, which
 
 try:
     import simplejson as json
@@ -21,7 +24,8 @@ FS_ENCODING = sys.getfilesystemencoding()
 
 
 class FiledataThread(threading.Thread):
-    """ slow file analyzer thread. Retrieve song's length and bpm where availble """
+    """ slow file analyzer thread.
+        Retrieve song's length and bpm where availble """
 
     daemon = True
 
@@ -31,9 +35,9 @@ class FiledataThread(threading.Thread):
         self.condition = condition
         self.dbpath = dbpath
         self.running = True
-        self.soxi = os.path.exists('/usr/bin/soxi')
-        self.sox = os.path.exists('/usr/bin/sox')
-        self.soundstretch = os.path.exists('/usr/bin/soundstretch')
+        self.soxi = which('soxi')
+        self.sox = which('sox')
+        self.soundstretch = which('soundstretch')
 
     def stop(self):
         self.running = False
@@ -41,10 +45,11 @@ class FiledataThread(threading.Thread):
     def run(self):
 
         self.db = dbapi.connect(self.dbpath)
+        logging.debug("sox: %s, soxi: %s, soundstretch: %s" % (self.sox, self.soxi, self.soundstretch))
         while self.running:
             try:
                 logging.debug("getting queue...")
-                path, title, artist = self.queue.get()
+                path, title, artist, album = self.queue.get()
             except Empty as e:
                 logging.warning(e)
                 continue
@@ -60,33 +65,46 @@ class FiledataThread(threading.Thread):
                     logging.info("Analyzing %s file" % path)
                     if self.soxi:
                         logging.debug("soxi_process for %s" % path)
-                        soxi_process = subprocess.Popen(["/usr/bin/soxi", "-D", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        soxi_output = float(soxi_process.communicate()[0])
-                    if self.sox:
+                        soxi_process = subprocess.Popen(
+                            [self.soxi, "-D", path],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+                        output = soxi_process.communicate()
+                        soxi_output = float(output[0])
+                    if self.sox and self.soundstretch:
                         logging.debug("sox_process for %s" % path)
-                        sox_process = subprocess.Popen(["/usr/bin/sox", path, "-t", "wav", "/tmp/.stretch.wav", "trim", "0", i], stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # well done, dear sox friend. Well done.
+                        sox_process = subprocess.Popen(
+                            [self.sox, path, "-t", "wav",
+                             "/tmp/.stretch.wav", "trim", "0", i],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)  # well done, dear sox friend. Well done.
                         # sox_process.wait()
                         sox_process.communicate()
-                    if self.soundstretch:
                         logging.debug("bpm_process for %s" % path)
-                        bpm_process = subprocess.Popen(["/usr/bin/soundstretch", "/tmp/.stretch.wav", "-bpm", "-quick", "-naa"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        bpm_process = subprocess.Popen(
+                            [self.soundstretch, "/tmp/.stretch.wav",
+                             "-bpm", "-quick", "-naa"],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
                         bpm_output = bpm_process.communicate()
-
-                        bpm_pattern = re.search("Detected BPM rate ([0-9]+)", bpm_output[0], re.M)
+                        bpm_pattern = re.search("Detected BPM rate ([0-9]+)",
+                                                bpm_output[1], re.M)
                 except Exception as e:
                     logging.error(e)
-                if bpm_pattern:
-                    bpm = float(bpm_pattern.groups()[0])
-                    logging.info("Detected bpm %s with %s seconds sampling" % (bpm, i))
+                bpm = bpm_pattern and float(bpm_pattern.groups()[0]) or 0.0
+                logging.info("Detected bpm %s with %s seconds sampling" % (bpm, i))
+                if bpm:
                     break
-                else:
-                    logging.warning("No bpm detected")
-                    bpm = 0.0
 
             self.condition.acquire()
-            self.db.execute("update song set bpm = ?, length = ? where path = ?", (bpm, soxi_output, path.decode(FS_ENCODING)))
-            self.db.commit()
-            self.condition.release()
+            try:
+                self.db.execute("update song set bpm = ?, length = ? where path = ?",
+                                (bpm, soxi_output, path.decode(FS_ENCODING)))
+                self.db.commit()
+            except:
+                pass
+            finally:
+                self.condition.release()
         self.db.close()
 
 
@@ -113,7 +131,7 @@ class LastFMMetadataThread(threading.Thread):
         self.db = dbapi.connect(self.dbpath)
         while self.running:
             try:
-                path, title, artist = self.queue.get()
+                path, title, artist, album = self.queue.get()
             except Empty as e:
                 logging.warning(e)
                 continue
@@ -138,7 +156,9 @@ class LastFMMetadataThread(threading.Thread):
 
             self.condition.acquire()
             try:
-                song_id = self.db.execute("select id from song where path = ?", (path.decode(FS_ENCODING), )).fetchone()[0]
+                song_id = self.db.execute("select id from song where path = ?",
+                                          (path.decode(FS_ENCODING), )
+                                          ).fetchone()[0]
                 known_tags = self.db.execute("select distinct weight, name, nameclean from song_x_tag left join tag on (tag_id = id) where song_id = ?;", (song_id,)).fetchall()
 
                 for t in tags:
@@ -148,16 +168,17 @@ class LastFMMetadataThread(threading.Thread):
                             self.db.execute("update song_x_tag set weight = ? where song_id = ? and tag_id = ?;", (t.weight, song_id, t.item.name))
                             alreadytag = True
                     if not alreadytag:
-                        if re.match("^([a-zA-Z0-9] )+[a-zA-Z0-9]$", t.item.name):  # you damned "e l e c t r o n i c" tag.
-                            cleantag = [re.sub("[^a-zA-Z0-9]+", "", t.item.name)]
+                        if re.match("^([a-zA-Z0-9] )+[a-zA-Z0-9]$",
+                                    t.item.name):  # you damned "e l e c t r o n i c" tag.
+                            cleantag = [re.sub("[^a-zA-Z0-9]+", "",
+                                               t.item.name)]
                         else:
-                            cleantag = re.sub("[^a-zA-Z0-9 ]+", "", t.item.name).strip().lower().split()
+                            cleantag = re.sub("[^a-zA-Z0-9 ]+", "",
+                                              t.item.name).strip().lower().split()
 
                         savedcleantag = []
                         savedcleantag.extend(cleantag)
-                        for i in xrange(len(cleantag), 0):
-                            if len(cleantag[i]) < 3:
-                                cleantag.pop(i)
+                        cleantag = filter(lambda x: len(x) > 3, cleantag)
 
                         if len(cleantag) > 6:
                             cleantag = [" ".join(savedcleantag)]  # as a single phrase
@@ -200,7 +221,7 @@ class DiscogsMetadataThread(threading.Thread):
     def run(self):
 
         self.db = dbapi.connect(self.dbpath)
-        lastrelease = ""
+        # lastrelease = ""
         lastdata = []
         lastquery = ""
         laststatus = 0
@@ -274,9 +295,7 @@ class DiscogsMetadataThread(threading.Thread):
 
                         savedcleantag = []
                         savedcleantag.extend(cleantag)
-                        for i in xrange(len(cleantag), 0):
-                            if len(cleantag[i]) < 3:
-                                cleantag.pop(i)
+                        cleantag = filter(lambda x: len(x) > 3, cleantag)
 
                         if len(cleantag) > 6:
                             cleantag = [" ".join(savedcleantag)]  # as a single phrase
@@ -299,3 +318,139 @@ class DiscogsMetadataThread(threading.Thread):
             finally:
                 self.condition.release()
         self.db.close()
+
+
+class AcoustidMetadataThread(threading.Thread):
+    """ Acoustid client Thread. Search for informations for releases """
+
+    daemon = True
+
+    def __init__(self, queue, condition, dbpath):
+        threading.Thread.__init__(self, name="AcoustidMetadataThread")
+        # musicbrainz.set_useragent('Cycle', '0.1')
+        self.daemon = True
+        self.queue = queue
+        self.condition = condition
+        self.dbpath = dbpath
+        self.running = True
+        self.fpcalc = which('/usr/bin/fpcalc')
+
+    def stop(self):
+        self.running = False
+
+    def run(self):
+
+        if not self.fpcalc:
+            return
+
+        logging.debug("fpcalc: %s" % self.fpcalc)
+
+        self.db = dbapi.connect(self.dbpath)
+        # lastrelease = ""
+        lastdata = []
+        lastquery = ""
+        laststatus = 0
+        starttime = time()
+        stoptime = starttime + 1
+        requests = 0
+        while self.running:
+            try:
+                path, title, artist, album = self.queue.get()
+            except Empty as e:
+                logging.warning(e)
+                continue
+            except Exception as e:
+                logging.error(e)
+                continue
+            if not path or not album:
+                logging.warning("No path/album name provided")
+                continue
+
+            if requests / (stoptime - starttime) > 3:
+                sleep(1)
+                starttime = stoptime
+
+            logging.info("Getting infos for %s %s" % (artist, album))
+            fingerprint = ''
+            duration = 0
+            try:
+                logging.info("Analyzing %s file" % path)
+                if self.fpcalc:
+                    logging.debug("fingerprint for %s" % path)
+                    fpcalc_process = subprocess.Popen(["/usr/bin/fpcalc", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    fpcalc_output = fpcalc_process.communicate()[0].split('\n')
+
+                    duration = fpcalc_output[1][9:]
+                    fingerprint = fpcalc_output[2][12:]
+            except Exception as e:
+                logging.error(e)
+
+            if fingerprint:
+                query = u"/v2/lookup?client=8XaBELgH&meta=recording+releasegroups+tracks+puids+usermeta+compress&duration=%s&format=json&fingerprint=%s" % (duration, fingerprint)
+                if query == lastquery and laststatus == 200:
+                    logging.info("Same request already occurred - skipping")
+
+                try:
+                    conn = HTTPConnection("api.acoustid.org", 80)
+                    conn.request("GET", query)
+                    response = conn.getresponse()
+                except:
+                    continue
+                puid = ""
+                mb_title = ""
+                mb_artists = ""
+                if response.status != 200:
+                    continue
+                try:
+                    lastquery = query
+                    laststatus = 200
+                    results = json.loads(response.read())
+                    lastdata = results["results"][0]
+                    logging.debug(lastdata)
+                    release = "releasegroups" in lastdata and lastdata["releasegroups"][0]
+                    recording = "recordings" in lastdata and lastdata["recordings"][0]
+                    score = lastdata['score']
+                    logging.debug(release)
+                    logging.debug(recording)
+                    if len(lastdata):
+                        logging.debug("%s results found" % len(lastdata))
+                        puid = 'puids' in lastdata and lastdata["puids"][0]
+                        mbid = release and release['id'] or recording and recording[0]['releasegroups'][0]['id']
+                        mb_title = release and release["title"] or recording and recording[0]['title']
+                        mb_artists = " ".join([i['name'] for i in (release and release["artists"] or recording and recording[0]['artists'])])
+                    logging.debug("Response status: %d %s" % (response.status, response.read()))
+                except Exception as e:
+                    logging.error(e)
+
+                stoptime = time()
+                requests = (requests + 1) % 3
+
+                if score < 0.7:
+                    continue
+
+                if len(title) == len(mb_title):
+                    title_distance = hamming(title, mb_title) / float(len(title))
+                else:
+                    title_distance = levenshtein(title, mb_title) / float(max(len(title), len(mb_title)))
+
+                if len(artist) == len(mb_artists):
+                    author_distance = hamming(artist, mb_artists) / float(len(artist))
+                else:
+                    author_distance = levenshtein(artist, mb_artists) / float(max(len(artist), len(mb_artists)))
+
+                # if title_distance > 0.33 and author_distance > 0.5:
+                logging.debug("distances: %s %s %s" % (score, title_distance, author_distance))
+                #     continue
+
+                logging.debug("puid: %s, mbid %s" % (puid, mbid))
+                self.condition.acquire()
+                try:
+                    song_id, album_id = self.db.execute("select id, album_id from song where path = ?;", (path,)).fetchone()
+                    self.db.execute("update song set puid = ?, mbid = ? where id = ?", (puid, mbid, song_id))
+                    if title_distance > 0:
+                        self.db.execute("update song set title = ? where id = ?", (mb_title, song_id))
+                    self.db.commit()
+                except Exception as e:
+                    logging.error(e)
+                finally:
+                    self.condition.release()

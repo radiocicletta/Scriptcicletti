@@ -10,9 +10,10 @@ __version__ = '0.7.0'
 __author__ = 'radiocicletta <radiocicletta@gmail.com>'
 
 from parameters import *  # a file parameters.py containing last.fm variables USERNAME and APIKEY
-from metadata.remote import LastFMMetadataThread, DiscogsMetadataThread, FiledataThread
+from metadata.remote import LastFMMetadataThread, DiscogsMetadataThread, FiledataThread, AcoustidMetadataThread
 from metadata.fsutil import breadth_scan
 from metadata.fs import create_subtreelistener
+from utils import levenshtein, hamming
 import sqlite3 as dbapi
 import sys
 import os
@@ -39,7 +40,9 @@ PRAGMA foreign_keys = ON;
 );""",
 """create table if not exists artist (
     id integer primary key asc autoincrement,
-    name text not null
+    name text not null,
+    puid text,
+    mbid text
 ); """,
 """create table if not exists song (
     id integer primary key asc autoincrement,
@@ -52,7 +55,8 @@ PRAGMA foreign_keys = ON;
     puid text,
     bpm real,
     path text unique not null,
-    length real default 0.0
+    length real default 0.0,
+    mbid text
 );""",
 """create index songgenre on song(genre_id);
 """,
@@ -104,7 +108,9 @@ PRAGMA foreign_keys = ON;
     id integer primary key asc autoincrement,
     title text not null,
     titleclean text not null,
-    date integer
+    date integer,
+    puid text,
+    mbid text
 );
 """,
 """insert into genre (desc, descclean) values ('unknown', 'unknown') ;""",
@@ -386,11 +392,11 @@ def daemonize(stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
     os.dup2(se.fileno(), sys.stderr.fileno())
 
 
-def start_daemon(path, dbpath, lf_queue, di_queue, fd_queue, condition):
+def start_daemon(path, dbpath, queues, condition):
     """ installs a subtree listener and wait for events """
     os.nice(19)
 
-    notifier_sb = create_subtreelistener(path, dbpath, lf_queue, di_queue, fd_queue, condition)
+    notifier_sb = create_subtreelistener(path, dbpath, queues, condition)
     THREADS.append(notifier_sb)
 
     THREADS.append(PollAnalyzer(condition, dbpath))
@@ -401,34 +407,8 @@ def start_daemon(path, dbpath, lf_queue, di_queue, fd_queue, condition):
     THREADS[-1].join()
 
 
-def start_scan(path, db, lf_queue, di_queue, fd_queue, condition, depth=1):
-    breadth_scan(path, db, lf_queue, di_queue, fd_queue, condition, depth)
-
-
-def levenshtein(a, b):  # Dr. levenshtein, i presume.
-    "Calculates the Levenshtein distance between a and b."
-    n, m = len(a), len(b)
-    if n > m:
-        # Make sure n <= m, to use O(min(n,m)) space
-        a, b = b, a
-        n, m = m, n
-
-    current = range(n + 1)
-    for i in range(1, m + 1):
-        previous, current = current, [i] + [0] * n
-        for j in range(1, n + 1):
-            add, delete = previous[j] + 1, current[j - 1] + 1
-            change = previous[j - 1]
-            if a[j - 1] != b[i - 1]:
-                change = change + 1
-            current[j] = min(add, delete, change)
-
-    return current[n]
-
-
-def hamming(a, b):
-    """ calculate the Hamming distance between a and b """
-    return sum(c_a != c_b for c_a, c_b in zip(a, b))
+def start_scan(path, db, queues, condition, depth=1):
+    breadth_scan(path, db, queues, condition, depth)
 
 
 def print_usage(argv):
@@ -511,21 +491,25 @@ if __name__ == "__main__":
         if prepare:
             for sql in DBSCHEMA:
                 db.execute(sql)
-        lastfmqueue = Queue()  # deque() #SyncQueue()
-        discogsqueue = Queue()  # deque() #SyncQueue()
-        filedataqueue = Queue()  # deque() #SyncQueue()
+        queues = {
+            'lastfm': Queue(),  # deque() #SyncQueue()
+            'discogs': Queue(),  # deque() #SyncQueue()
+            'acoustid': Queue(),  # deque() #SyncQueue()
+            'filedata': Queue()  # deque() #SyncQueue()
+        }
         condition = threading.Condition()
 
-        THREADS.append(LastFMMetadataThread(lastfmqueue, condition, dbpath))
-        THREADS.append(DiscogsMetadataThread(discogsqueue, condition, dbpath))
+        THREADS.append(LastFMMetadataThread(queues["lastfm"], condition, dbpath))
+        THREADS.append(DiscogsMetadataThread(queues["discogs"], condition, dbpath))
+        THREADS.append(AcoustidMetadataThread(queues["acoustid"], condition, dbpath))
         if bpmdetect:
-            THREADS.append(FiledataThread(filedataqueue, condition, dbpath))
+            THREADS.append(FiledataThread(queues["filedata"], condition, dbpath))
 
         if scan:
             THREADS[-1].start()
             THREADS[-2].start()
             THREADS[-3].start()
-            start_scan(patharg, db, lastfmqueue, discogsqueue, filedataqueue, condition, recursive)
+            start_scan(patharg, db, queues.values(), condition, recursive)
         if listen:
             signal.signal(signal.SIGTERM, shutdown)
             try:
@@ -534,6 +518,6 @@ if __name__ == "__main__":
                 THREADS[-1].start()
                 THREADS[-2].start()
                 THREADS[-3].start()
-                start_daemon(patharg, dbpath, lastfmqueue, discogsqueue, filedataqueue, condition)
+                start_daemon(patharg, dbpath, queues.values(), condition)
             except KeyboardInterrupt:
                 os.kill(os.getpid(), signal.SIGTERM)

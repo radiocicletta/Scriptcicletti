@@ -20,7 +20,7 @@ FS_ENCODING = sys.getfilesystemencoding()
 DECODERS = (MP3, FLAC, MP4, MonkeysAudio, Musepack, WavPack, TrueAudio, OggVorbis, OggTheora, OggSpeex, OggFLAC)
 
 
-def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, lf_queue, di_queue, fd_queue, condition):
+def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, queues, condition):
     """ id3 tags retriever """
 
     id3item = None
@@ -153,27 +153,32 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         db.execute("insert or replace into song(title, titleclean, artist_id, genre_id, album_id, path, length) values (?,?,?,?,?,?,?)", (title, titleclean, recentartists[artist], recentgenres[genre], recentalbums[album], abspathitem.decode(FS_ENCODING), length))
 
         logging.debug("collect_metadata putting new artist on queue")
-        if not lf_queue.full():
-            lf_queue.put_nowait((abspathitem, title, artist))
-        else:
-            lf_queue.put((abspathitem, title, artist), block=True)
-        if not di_queue.full():
-            di_queue.put_nowait((abspathitem, title, artist, album))
-        else:
-            di_queue.put((abspathitem, title, artist, album), block=True)
-        if not fd_queue.full():
-            fd_queue.put_nowait((abspathitem, title, artist))
-        else:
-            fd_queue.put((abspathitem, title, artist), block=True)
+        for q in queues:
+            if not q.full():
+                q.put_nowait((abspathitem, title, artist, album))
+            else:
+                q.put((abspathitem, title, artist, album), block=True)
+        #if not lf_queue.full():
+        #    lf_queue.put_nowait((abspathitem, title, artist))
+        #else:
+        #    lf_queue.put((abspathitem, title, artist), block=True)
+        #if not di_queue.full():
+        #    di_queue.put_nowait((abspathitem, title, artist, album))
+        #else:
+        #    di_queue.put((abspathitem, title, artist, album), block=True)
+        #if not fd_queue.full():
+        #    fd_queue.put_nowait((abspathitem, title, artist))
+        #else:
+        #    fd_queue.put((abspathitem, title, artist), block=True)
 
+        db.commit()
     except Exception as e:
         logging.error(e)
     finally:
-        db.commit()
         condition.release()
 
 
-def breadth_scan(path, db, lf_queue, di_queue, fd_queue, condition, depth=1):
+def breadth_scan(path, db, queues, condition, depth=1):
     """ Breadth scan a subtree """
 
     scanpath = [path, ]
@@ -192,7 +197,7 @@ def breadth_scan(path, db, lf_queue, di_queue, fd_queue, condition, depth=1):
             if os.path.isdir(abspathitem) and depth:
                 scanpath.append(abspathitem)
             else:
-                collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, lf_queue, di_queue, fd_queue, condition)
+                collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, queues, condition)
     """ Breadth scan a subtree """
 
     scanpath = [path, ]
@@ -211,4 +216,4 @@ def breadth_scan(path, db, lf_queue, di_queue, fd_queue, condition, depth=1):
             if os.path.isdir(abspathitem) and depth:
                 scanpath.append(abspathitem)
             else:
-                collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, lf_queue, di_queue, fd_queue, condition)
+                collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, queues, condition)
