@@ -413,6 +413,7 @@ class AcoustidMetadataThread(threading.Thread):
                         mb_artists = " ".join([i['name'] for i in (release and release["artists"] or recording and recording[0]['artists'])])
                     logging.debug("Response status: %d %s" % (response.status, response.read()))
                 except Exception as e:
+                    continue
                     logging.error(e)
 
                 stoptime = time()
