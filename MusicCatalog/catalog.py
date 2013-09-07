@@ -30,6 +30,7 @@ from random import Random
 from SocketServer import ThreadingTCPServer    # , ForkingTCPServer
 from SimpleHTTPServer import SimpleHTTPRequestHandler
 from StringIO import StringIO
+from urllib import unquote
 
 DBSCHEMA = ("""
 PRAGMA foreign_keys = ON;
