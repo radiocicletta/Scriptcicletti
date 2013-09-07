@@ -400,9 +400,9 @@ class AcoustidMetadataThread(threading.Thread):
                     results = json.loads(response.read())
                     lastdata = results["results"][0]
                     logging.debug(lastdata)
-                    release = "releasegroups" in lastdata and lastdata["releasegroups"][0]
-                    recording = "recordings" in lastdata and lastdata["recordings"][0]
-                    score = lastdata['score']
+                    release = "releasegroups" in lastdata and len(lastdata) and lastdata["releasegroups"][0]
+                    recording = "recordings" in lastdata and len(lastdata) and lastdata["recordings"][0]
+                    score = "score" in lastdata and lastdata['score']
                     logging.debug(release)
                     logging.debug(recording)
                     if len(lastdata):
