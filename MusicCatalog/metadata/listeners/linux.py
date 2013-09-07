@@ -56,7 +56,7 @@ class InotifySubtreeListener(SubtreeListener, ProcessEvent):
         db = dbapi.connect(self.dbpath)
         #exists = db.execute("select id from song where path like ? limit 1;", ("%s%%" % evt.path,)).fetchone()
         #if not exists:
-        breadth_scan(newpath, db, self.lf_queue, self.di_queue, self.fd_queue, self.condition, True)
+        breadth_scan(newpath, db, self.queues, self.condition, True)
         db.close()
 
     def process_IN_DELETE(self, evt):
