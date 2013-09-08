@@ -10,7 +10,7 @@ from mutagen.oggtheora import OggTheora
 from mutagen.oggvorbis import OggVorbis
 from mutagen.trueaudio import TrueAudio
 from mutagen.wavpack import WavPack
-from ID3 import ID3
+from ID3 import ID3, InvalidTagError
 import logging
 import os
 import sys
@@ -35,6 +35,8 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
             logging.error(e)
     try:
         id3v1item = ID3(abspathitem).as_dict()
+    except InvalidTagError as e:
+        logging.error(e)
     except Exception as e:
         logging.error(e)
 
