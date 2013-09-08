@@ -199,16 +199,22 @@ class PollAnalyzer(threading.Thread):
                 known_tags = db.execute("select distinct id, name, nameclean from tag").fetchall()
                 self.condition.release()
                 #commit = False
+                logging.debug('Begin with tag/genre analysis...')
                 for i in xrange(0, len(known_genres)):
                     if not self.running:
                         break
-                    self.condition.acquire()
 
-                    if calcsimilarity(known_genres, "genre_x_genre", "id_genre", "id_related_genre", known_genres) or calcsimilarity(known_tags, "genre_x_tag", "id_genre", "id_tag", known_genres):
+                    self.condition.acquire()
+                    if calcsimilarity(known_genres, "genre_x_genre", "id_genre", "id_related_genre", known_genres):
                         db.commit()
+                    self.condition.release() # hoping to break the analysis period
+                    self.condition.acquire()
+                    if calcsimilarity(known_tags, "genre_x_tag", "id_genre", "id_tag", known_genres):
+                        db.commit()
+                    self.condition.release()
 
                     complete_genres = db.execute("select count(id) from genre;").fetchall()[0][0]
-                    self.condition.release()
+                logging.debug('End with tag/genre analysis...')
                 sleep(sleeptime)
             db.close()
 
