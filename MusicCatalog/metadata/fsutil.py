@@ -9,6 +9,7 @@ from mutagen.oggspeex import OggSpeex
 from mutagen.oggtheora import OggTheora
 from mutagen.oggvorbis import OggVorbis
 from mutagen.trueaudio import TrueAudio
+from collections import defaultdict
 from mutagen.wavpack import WavPack
 from ID3 import ID3, InvalidTagError
 import logging
@@ -34,39 +35,20 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         except Exception as e:
             logging.error(e)
     try:
-        id3v1item = ID3(abspathitem).as_dict()
+        id3v1item = defaultdict(lambda :'unknown', ID3(abspathitem).as_dict())
     except InvalidTagError as e:
         logging.error(e)
     except Exception as e:
         logging.error(e)
 
-    if 'TITLE' in id3v1item:
-        title = id3v1item['TITLE'].strip().lower()
-        titleclean = re.sub("[^\w]*", "", title)
-        id3v1 = True
-    else:
-        title = "unknown"
-        titleclean = "unknown"
-    if 'ARTIST' in id3v1item:
-        artist = id3v1item['ARTIST'].strip().lower()
-        id3v1 = True
-    else:
-        artist = "unknown"
-    if 'ALBUM' in id3v1item:
-        album = id3v1item['ALBUM'].strip().lower()
-        albumclean = re.sub("[^\w]*", "", album)
-        id3v1 = True
-    else:
-        album = "unknown"
-        albumclean = "unknown"
-    if 'GENRE' in id3v1item:
-        genre = id3v1item['GENRE'].strip().lower()
-        genreclean = re.sub("[^\w]+", "", genre).strip().lower()
-        id3v1 = True
-    else:
-        genre = "unknown"
-        genreclean = "unknown"
-    if not id3item and not id3v1:
+    title = id3v1item['TITLE'].strip().lower()
+    titleclean = re.sub("[^\w]*", "", title)
+    artist = id3v1item['ARTIST'].strip().lower()
+    album = id3v1item['ALBUM'].strip().lower()
+    albumclean = re.sub("[^\w]*", "", album)
+    genre = id3v1item['GENRE'].strip().lower()
+    genreclean = re.sub("[^\w]+", "", genre).strip().lower()
+    if not id3item:
         logging.warning("No ID3 informations found")
         return
     length = 0.0
@@ -111,73 +93,52 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         logging.warning("No ID3v2 informations found")
         return
 
-    condition.acquire()
-    try:
-        ar = artist if artist else 'unknown'
-        if not artist in recentartists.keys():
-            if not db.execute("select id from artist where name = ?", (ar,)).fetchone():
-                db.execute("insert into artist(name) values(?)", (ar,))
-                db.commit()
-            recentartists[artist] = db.execute("select id from artist where name = ?", (ar,)).fetchone()[0]
-    except Exception as e:
-        logging.error(e)
-    finally:
-        condition.release()
+    with condition:
+        try:
+            ar = artist
+            if not artist in recentartists.keys():
+                if not db.execute("select id from artist where name = ?", (ar,)).fetchone():
+                    db.execute("insert into artist(name) values(?)", (ar,))
+                    db.commit()
+                recentartists[artist] = db.execute("select id from artist where name = ?", (ar,)).fetchone()[0]
+        except Exception as e:
+            logging.error(e)
 
-    condition.acquire()
-    try:
-        al = albumclean if albumclean else 'unknown'
-        if not album in recentalbums.keys():
-            if not db.execute("select id from album where titleclean = ?", (al,)).fetchone():
-                db.execute("insert into album(title, titleclean) values(?, ?)", (album, albumclean))
-                db.commit()
-            recentalbums[album] = db.execute("select id from album where titleclean = ?", (al,)).fetchone()[0]
-    except Exception as e:
-        logging.error(e)
-    finally:
-        condition.release()
+    with condition:
+        try:
+            al = albumclean
+            if not album in recentalbums.keys():
+                if not db.execute("select id from album where titleclean = ?", (al,)).fetchone():
+                    db.execute("insert into album(title, titleclean) values(?, ?)", (album, albumclean))
+                    db.commit()
+                recentalbums[album] = db.execute("select id from album where titleclean = ?", (al,)).fetchone()[0]
+        except Exception as e:
+            logging.error(e)
 
-    condition.acquire()
-    try:
-        ge = genre if genre else 'unknown'
-        if not genre in recentgenres.keys():
-            if not db.execute("select id from genre where desc = ?", (ge,)).fetchone():
-                db.execute("insert or ignore into genre(desc, descclean) values(?, ?)", (genre, genreclean))
-                db.commit()
-            recentgenres[genre] = db.execute("select id from genre where desc = ?", (ge,)).fetchone()[0]
-    except Exception as e:
-        logging.error(e)
-    finally:
-        condition.release()
+    with condition:
+        try:
+            ge = genre
+            if not genre in recentgenres.keys():
+                if not db.execute("select id from genre where desc = ?", (ge,)).fetchone():
+                    db.execute("insert or ignore into genre(desc, descclean) values(?, ?)", (genre, genreclean))
+                    db.commit()
+                recentgenres[genre] = db.execute("select id from genre where desc = ?", (ge,)).fetchone()[0]
+        except Exception as e:
+            logging.error(e)
 
-    condition.acquire()
-    try:
-        db.execute("insert or replace into song(title, titleclean, artist_id, genre_id, album_id, path, length) values (?,?,?,?,?,?,?)", (title, titleclean, recentartists[artist], recentgenres[genre], recentalbums[album], abspathitem.decode(FS_ENCODING), length))
+    with condition:
+        try:
+            db.execute("insert or replace into song(title, titleclean, artist_id, genre_id, album_id, path, length) values (?,?,?,?,?,?,?)", (title, titleclean, recentartists[artist], recentgenres[genre], recentalbums[album], abspathitem.decode(FS_ENCODING), length))
 
-        logging.debug("collect_metadata putting new artist on queue")
-        for q in queues:
-            if not q.full():
-                q.put_nowait((abspathitem, title, artist, album))
-            else:
-                q.put((abspathitem, title, artist, album), block=True)
-        #if not lf_queue.full():
-        #    lf_queue.put_nowait((abspathitem, title, artist))
-        #else:
-        #    lf_queue.put((abspathitem, title, artist), block=True)
-        #if not di_queue.full():
-        #    di_queue.put_nowait((abspathitem, title, artist, album))
-        #else:
-        #    di_queue.put((abspathitem, title, artist, album), block=True)
-        #if not fd_queue.full():
-        #    fd_queue.put_nowait((abspathitem, title, artist))
-        #else:
-        #    fd_queue.put((abspathitem, title, artist), block=True)
-
-        db.commit()
-    except Exception as e:
-        logging.error(e)
-    finally:
-        condition.release()
+            logging.debug("collect_metadata putting new artist on queue")
+            for q in queues:
+                if not q.full():
+                    q.put_nowait((abspathitem, title, artist, album))
+                else:
+                    q.put((abspathitem, title, artist, album), block=True)
+            db.commit()
+        except Exception as e:
+            logging.error(e)
 
 
 def breadth_scan(path, db, queues, condition, depth=1):

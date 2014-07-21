@@ -141,19 +141,19 @@ class PollAnalyzer(threading.Thread):
         sleeptime = 600
         complete_genres = 0
 
-        def calcsimilarity(known, table, id1, id2, known_genres):
-            splitted_genre = re.split("[/,;]", known_genres[i][1])
+        def calcsimilarity(known, table, id1, id2, comparison):
+            tokens = re.split("[/,;]", comparison[1])
             ret = False
             for j in xrange(0, len(known)):
                 if i == j:
                     continue
-                if known_genres[i][2] == known[j][2]:
+                if comparison[2] == known[j][2]:
                     similarity = 1.0
                 else:
                     compared_genre = re.split("[/,;]", known[j][1])
                     distance = {}
                     sametags = 0
-                    for a in splitted_genre:
+                    for a in tokens:
                         if not a:
                             continue
                         for b in compared_genre:
@@ -173,8 +173,8 @@ class PollAnalyzer(threading.Thread):
                     else:
                         similarity = 0.0
                 if similarity > 0.33:
-                    if not db.execute("select * from %s  where %s  = ? and %s = ?" % (table, id1, id2), (known_genres[i][0], known[j][0])).fetchall():
-                        db.execute("insert or ignore into %s (%s, %s, similarity) values ( ?, ?, ?)" % (table, id1, id2), (known_genres[i][0], known[j][0], similarity))
+                    if not db.execute("select * from %s  where %s  = ? and %s = ?" % (table, id1, id2), (comparison[0], known[j][0])).fetchall():
+                        db.execute("insert or ignore into %s (%s, %s, similarity) values ( ?, ?, ?)" % (table, id1, id2), (comparison[0], known[j][0], similarity))
                         ret = True
             return ret
 
@@ -182,9 +182,8 @@ class PollAnalyzer(threading.Thread):
             sleep(max(300, sleeptime))
             logging.info("Performing tag/genres matching analysis")
             db = dbapi.connect(dbpath)
-            self.condition.acquire()
-            collected_genres = db.execute("select count(id) from genre;").fetchall()
-            self.condition.release()
+            with condition:
+                collected_genres = db.execute("select count(id) from genre;").fetchall()
 
             genres_count = complete_genres - collected_genres[0][0]
 
@@ -194,10 +193,9 @@ class PollAnalyzer(threading.Thread):
             else:
                 sleeptime = sleeptime / 2
                 logging.debug("New Sleep time: %s Secs" % sleeptime)
-                self.condition.acquire()
-                known_genres = db.execute("select distinct id, desc, descclean from genre").fetchall()
-                known_tags = db.execute("select distinct id, name, nameclean from tag").fetchall()
-                self.condition.release()
+                with condition:
+                    known_genres = db.execute("select distinct id, desc, descclean from genre").fetchall()
+                    known_tags = db.execute("select distinct id, name, nameclean from tag where length(name) > 1").fetchall()
                 #commit = False
                 logging.debug('Begin with tag/genre analysis...')
                 for i in xrange(0, len(known_genres)):
@@ -205,12 +203,17 @@ class PollAnalyzer(threading.Thread):
                         break
 
                     self.condition.acquire()
-                    if calcsimilarity(known_genres, "genre_x_genre", "id_genre", "id_related_genre", known_genres):
+                    calculated_genres = [i[0] for i in db.execute("select distinct id_related_genre from genre_x_genre where id_genre = ? ", (known_genres[i][0])).fetchall()]
+                    calculated_tags = [i[0] for i in db.execute("select distinct id_tag from genre_x_tag where id_genre = ? ", (known_tags[i][0])).fetchall()]
+                    filtered_genres = filter(lambda x: not x[0] in calculated_genres, known_genres)
+                    filtered_tags = filter(lambda x: not x[0] in calculated_tags, known_tags)
+                    if calcsimilarity(known_genres, "genre_x_genre", "id_genre", "id_related_genre", filtered_genres):
                         db.commit()
-                    self.condition.release() # hoping to break the analysis period
-                    self.condition.acquire()
-                    if calcsimilarity(known_tags, "genre_x_tag", "id_genre", "id_tag", known_genres):
-                        db.commit()
+                    else:
+                        self.condition.release() # hoping to break the analysis period
+                        self.condition.acquire()
+                        if calcsimilarity(known_tags, "genre_x_tag", "id_genre", "id_tag", known_genres):
+                            db.commit()
                     self.condition.release()
 
                     complete_genres = db.execute("select count(id) from genre;").fetchall()[0][0]
