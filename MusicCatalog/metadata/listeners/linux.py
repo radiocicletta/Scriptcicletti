@@ -83,32 +83,31 @@ class InotifySubtreeListener(SubtreeListener, ProcessEvent):
         if abspathitem in (self.dbpath, "%s-journal" % self.dbpath):
             return
 
-        self.condition.acquire()
-        db = dbapi.connect(self.dbpath)
-        try:
-            if evt.dir:  # os.path.isdir(abspathitem):
-                songs = db.execute(
-                    "select id from song where path like ?;",
-                    ("%s%%" % abspathitem.decode(FS_ENCODING),))
-                song_id = songs.fetchall()
-                self.recents = []
-            else:
-                songs = db.execute(
-                    "select id from song where path = ?;",
-                    (abspathitem.decode(FS_ENCODING),))
-                song_id = [songs.fetchone()]
-            if song_id and song_id[0]:
-                for s_i in song_id:
-                    db.execute(
-                        "delete from song where id = ?;", s_i)
-                    db.execute(
-                        "delete from song_x_tag where song_id = ?;", s_i)
-            db.commit()
-        except Exception as e:
-            logging.error(e)
-        finally:
-            db.close()
-            self.condition.release()
+        with self.condition:
+            db = dbapi.connect(self.dbpath)
+            try:
+                if evt.dir:  # os.path.isdir(abspathitem):
+                    songs = db.execute(
+                        "select id from song where path like ?;",
+                        ("%s%%" % abspathitem.decode(FS_ENCODING),))
+                    song_id = songs.fetchall()
+                    self.recents = []
+                else:
+                    songs = db.execute(
+                        "select id from song where path = ?;",
+                        (abspathitem.decode(FS_ENCODING),))
+                    song_id = [songs.fetchone()]
+                if song_id and song_id[0]:
+                    for s_i in song_id:
+                        db.execute(
+                            "delete from song where id = ?;", s_i)
+                        db.execute(
+                            "delete from song_x_tag where song_id = ?;", s_i)
+                db.commit()
+            except Exception as e:
+                logging.error(e)
+            finally:
+                db.close()
         if abspathitem in self.recents:
             self.recents.remove(abspathitem)
 
