@@ -1,13 +1,18 @@
 from metadata.fsutil import breadth_scan
 from listener import SubtreeListener
-from fsevents import Observer, Stream, IN_CREATE, IN_DELETE, IN_MODIFY, IN_MOVED_FROM, IN_MOVED_TO, IN_ATTRIB
+from fsevents import Observer, Stream, \
+    IN_CREATE, \
+    IN_DELETE, \
+    IN_MODIFY, \
+    IN_MOVED_FROM, \
+    IN_MOVED_TO, \
+    IN_ATTRIB
 from select import kqueue, kevent
 import sqlite3 as dbapi
 import os
 import sys
 import select
 import logging
-import re
 import threading
 FS_ENCODING = sys.getfilesystemencoding()
 
@@ -39,7 +44,10 @@ class FseventsSubtreeListener(SubtreeListener):
             logging.debug("IN_CREATE %s" % evt.name)
             with self._lock:
                 fd = os.open(evt.name, os.O_RDONLY)
-                events = [kevent(fd, filter=select.KQ_FILTER_READ, flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR, fflags=select.KQ_NOTE_EXTEND)]
+                events = [kevent(fd,
+                                 filter=select.KQ_FILTER_READ,
+                                 flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                                 fflags=select.KQ_NOTE_EXTEND)]
                 #events_stop = [kevent(fd, filter=select.KQ_FILTER_READ, flags=select.KQ_EV_DELETE, fflags=select.KQ_NOTE_EXTEND)]
                 kq = kqueue()
                 size = -1
@@ -68,7 +76,13 @@ class FseventsSubtreeListener(SubtreeListener):
             if os.path.isdir(evt.name):
                 db = dbapi.connect(self.dbpath)
                 with self._lock:
-                    breadth_scan(evt.name, db, self.lf_queue, self.di_queue, self.fd_queue, self.condition, True)
+                    breadth_scan(
+                        evt.name,
+                        db,
+                        self.lf_queue,
+                        self.di_queue,
+                        self.fd_queue,
+                        self.condition, True)
                 db.close()
             else:
                 self.process(evt.name)
@@ -81,18 +95,24 @@ class FseventsSubtreeListener(SubtreeListener):
             self.condition.acquire()
             db = dbapi.connect(self.dbpath)
             try:
-                songs = db.execute("select id from song where path = ?;", (evt.name.decode(FS_ENCODING),))
+                songs = db.execute(
+                    "select id from song where path = ?;",
+                    (evt.name.decode(FS_ENCODING),))
                 song_id = [songs.fetchone()]
                 if not song_id[0]:
                     logging.debug("DELETION DIRECTORY (?): %s" % evt.name)
-                    songs = db.execute("select id from song where path like ?;", ("%s%%" % evt.name.decode(FS_ENCODING),))
+                    songs = db.execute(
+                        "select id from song where path like ?;",
+                        ("%s%%" % evt.name.decode(FS_ENCODING),))
                     song_id = songs.fetchall()
                     self.recents = []
                 if song_id and song_id[0]:
                     logging.debug("SONG_ID: %s" % song_id)
                     for s_i in song_id:
-                        db.execute("delete from song where id = ?;", s_i)
-                        db.execute("delete from song_x_tag where song_id = ?;", s_i)
+                        db.execute(
+                            "delete from song where id = ?;", s_i)
+                        db.execute(
+                            "delete from song_x_tag where song_id = ?;", s_i)
                     db.commit()
             except Exception as e:
                 logging.error(e)

@@ -1,5 +1,13 @@
 from metadata.fsutil import breadth_scan
-from pyinotify import ProcessEvent, WatchManager, ThreadedNotifier, ExcludeFilter, IN_CLOSE_WRITE, IN_DELETE, IN_MOVED_FROM, IN_MOVED_TO, IN_CREATE, IN_ISDIR
+from pyinotify import ProcessEvent, \
+    WatchManager, \
+    ThreadedNotifier, \
+    ExcludeFilter, \
+    IN_CLOSE_WRITE, \
+    IN_DELETE, \
+    IN_MOVED_FROM, \
+    IN_MOVED_TO, \
+    IN_CREATE, IN_ISDIR
 from listener import SubtreeListener
 import os
 import sys
@@ -14,9 +22,19 @@ class InotifyThread(ThreadedNotifier):
         self.wm_auto = WatchManager()
         ThreadedNotifier.__init__(self, self.wm_auto, listener)
 
-    def observe(self, path, subtreemask=IN_CLOSE_WRITE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_ISDIR, excludelist=[]):
+    def observe(self, path, subtreemask=IN_CLOSE_WRITE |
+                IN_DELETE |
+                IN_MOVED_FROM |
+                IN_MOVED_TO |
+                IN_CREATE |
+                IN_ISDIR, excludelist=[]):
         excludefilter = ExcludeFilter(excludelist)
-        self.wdd_sb = self.wm_auto.add_watch(path, subtreemask, auto_add=True, rec=True, exclude_filter=excludefilter)
+        self.wdd_sb = self.wm_auto.add_watch(
+            path,
+            subtreemask,
+            auto_add=True,
+            rec=True,
+            exclude_filter=excludefilter)
 
 
 class InotifySubtreeListener(SubtreeListener, ProcessEvent):
@@ -54,8 +72,6 @@ class InotifySubtreeListener(SubtreeListener, ProcessEvent):
         logging.debug("IN_ISDIR %s" % evt.path)
         newpath = "%s/%s" % (evt.path, evt.name)
         db = dbapi.connect(self.dbpath)
-        #exists = db.execute("select id from song where path like ? limit 1;", ("%s%%" % evt.path,)).fetchone()
-        #if not exists:
         breadth_scan(newpath, db, self.queues, self.condition, True)
         db.close()
 
@@ -71,16 +87,22 @@ class InotifySubtreeListener(SubtreeListener, ProcessEvent):
         db = dbapi.connect(self.dbpath)
         try:
             if evt.dir:  # os.path.isdir(abspathitem):
-                songs = db.execute("select id from song where path like ?;", ("%s%%" % abspathitem.decode(FS_ENCODING),))
+                songs = db.execute(
+                    "select id from song where path like ?;",
+                    ("%s%%" % abspathitem.decode(FS_ENCODING),))
                 song_id = songs.fetchall()
                 self.recents = []
             else:
-                songs = db.execute("select id from song where path = ?;", (abspathitem.decode(FS_ENCODING),))
+                songs = db.execute(
+                    "select id from song where path = ?;",
+                    (abspathitem.decode(FS_ENCODING),))
                 song_id = [songs.fetchone()]
             if song_id and song_id[0]:
                 for s_i in song_id:
-                    db.execute("delete from song where id = ?;", s_i)
-                    db.execute("delete from song_x_tag where song_id = ?;", s_i)
+                    db.execute(
+                        "delete from song where id = ?;", s_i)
+                    db.execute(
+                        "delete from song_x_tag where song_id = ?;", s_i)
             db.commit()
         except Exception as e:
             logging.error(e)

@@ -18,10 +18,28 @@ import sys
 
 
 FS_ENCODING = sys.getfilesystemencoding()
-DECODERS = (MP3, FLAC, MP4, MonkeysAudio, Musepack, WavPack, TrueAudio, OggVorbis, OggTheora, OggSpeex, OggFLAC)
+DECODERS = (
+    MP3,
+    FLAC,
+    MP4,
+    MonkeysAudio,
+    Musepack,
+    WavPack,
+    TrueAudio,
+    OggVorbis,
+    OggTheora,
+    OggSpeex,
+    OggFLAC)
 
 
-def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, queues, condition):
+def collect_metadata(
+        abspathitem,
+        db,
+        recentartists,
+        recentalbums,
+        recentgenres,
+        queues,
+        condition):
     """ id3 tags retriever """
 
     id3item = None
@@ -35,7 +53,7 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         except Exception as e:
             logging.error(e)
     try:
-        id3v1item = defaultdict(lambda :'unknown', ID3(abspathitem).as_dict())
+        id3v1item = defaultdict(lambda: 'unknown', ID3(abspathitem).as_dict())
     except InvalidTagError as e:
         logging.error(e)
     except Exception as e:
@@ -97,10 +115,15 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         try:
             ar = artist
             if not artist in recentartists.keys():
-                if not db.execute("select id from artist where name = ?", (ar,)).fetchone():
-                    db.execute("insert into artist(name) values(?)", (ar,))
+                if not db.execute(
+                    "select id from artist where name = ?",
+                        (ar,)).fetchone():
+                    db.execute(
+                        "insert into artist(name) values(?)", (ar,))
                     db.commit()
-                recentartists[artist] = db.execute("select id from artist where name = ?", (ar,)).fetchone()[0]
+                recentartists[artist] = db.execute(
+                    "select id from artist where name = ?",
+                    (ar,)).fetchone()[0]
         except Exception as e:
             logging.error(e)
 
@@ -108,10 +131,16 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         try:
             al = albumclean
             if not album in recentalbums.keys():
-                if not db.execute("select id from album where titleclean = ?", (al,)).fetchone():
-                    db.execute("insert into album(title, titleclean) values(?, ?)", (album, albumclean))
+                if not db.execute(
+                    "select id from album where titleclean = ?",
+                        (al,)).fetchone():
+                    db.execute(
+                        "insert into album(title, titleclean) "
+                        "values(?, ?)", (album, albumclean))
                     db.commit()
-                recentalbums[album] = db.execute("select id from album where titleclean = ?", (al,)).fetchone()[0]
+                recentalbums[album] = db.execute(
+                    "select id from album where titleclean = ?",
+                    (al,)).fetchone()[0]
         except Exception as e:
             logging.error(e)
 
@@ -119,16 +148,33 @@ def collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres,
         try:
             ge = genre
             if not genre in recentgenres.keys():
-                if not db.execute("select id from genre where desc = ?", (ge,)).fetchone():
-                    db.execute("insert or ignore into genre(desc, descclean) values(?, ?)", (genre, genreclean))
+                if not db.execute(
+                    "select id from genre where desc = ?",
+                        (ge,)).fetchone():
+                    db.execute(
+                        "insert or ignore into genre(desc, descclean) "
+                        "values(?, ?)", (genre, genreclean))
                     db.commit()
-                recentgenres[genre] = db.execute("select id from genre where desc = ?", (ge,)).fetchone()[0]
+                recentgenres[genre] = db.execute(
+                    "select id from genre where desc = ?",
+                    (ge,)).fetchone()[0]
         except Exception as e:
             logging.error(e)
 
     with condition:
         try:
-            db.execute("insert or replace into song(title, titleclean, artist_id, genre_id, album_id, path, length) values (?,?,?,?,?,?,?)", (title, titleclean, recentartists[artist], recentgenres[genre], recentalbums[album], abspathitem.decode(FS_ENCODING), length))
+            db.execute(
+                "insert or replace into song("
+                "title, titleclean, artist_id, "
+                "genre_id, album_id, path, length) "
+                "values (?,?,?,?,?,?,?)",
+                (
+                    title,
+                    titleclean,
+                    recentartists[artist],
+                    recentgenres[genre],
+                    recentalbums[album],
+                    abspathitem.decode(FS_ENCODING), length))
 
             logging.debug("collect_metadata putting new artist on queue")
             for q in queues:
@@ -160,7 +206,14 @@ def breadth_scan(path, db, queues, condition, depth=1):
             if os.path.isdir(abspathitem) and depth:
                 scanpath.append(abspathitem)
             else:
-                collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, queues, condition)
+                collect_metadata(
+                    abspathitem,
+                    db,
+                    recentartists,
+                    recentalbums,
+                    recentgenres,
+                    queues,
+                    condition)
     """ Breadth scan a subtree """
 
     scanpath = [path, ]
@@ -179,4 +232,11 @@ def breadth_scan(path, db, queues, condition, depth=1):
             if os.path.isdir(abspathitem) and depth:
                 scanpath.append(abspathitem)
             else:
-                collect_metadata(abspathitem, db, recentartists, recentalbums, recentgenres, queues, condition)
+                collect_metadata(
+                    abspathitem,
+                    db,
+                    recentartists,
+                    recentalbums,
+                    recentgenres,
+                    queues,
+                    condition)

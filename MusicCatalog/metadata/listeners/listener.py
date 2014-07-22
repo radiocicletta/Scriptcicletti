@@ -29,7 +29,14 @@ class SubtreeListener():
                 db.close()
                 return
             logging.debug('Collecting metadata')
-            collect_metadata(abspathitem, db, self.recentartists, self.recentalbums, self.recentgenres, self.queues, self.condition)
+            collect_metadata(
+                abspathitem,
+                db,
+                self.recentartists,
+                self.recentalbums,
+                self.recentgenres,
+                self.queues,
+                self.condition)
 
             if len(self.recents) >= 20:
                 self.recents.pop(0)

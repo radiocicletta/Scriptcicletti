@@ -1,8 +1,8 @@
-from parameters import * # a file parameters.py containing last.fm variables USERNAME and APIKEY
+from parameters import *
 import threading
 import re
 import pylast
-from urllib import unquote, quote
+from urllib import quote
 from Queue import Empty
 from httplib import HTTPConnection
 from itertools import permutations
@@ -44,7 +44,9 @@ class FiledataThread(threading.Thread):
     def run(self):
 
         self.db = dbapi.connect(self.dbpath)
-        logging.debug("sox: %s, soxi: %s, soundstretch: %s" % (self.sox, self.soxi, self.soundstretch))
+        logging.debug(
+            "sox: %s, soxi: %s, soundstretch: %s" %
+            (self.sox, self.soxi, self.soundstretch))
         while self.running:
             try:
                 logging.debug("getting queue...")
@@ -76,7 +78,7 @@ class FiledataThread(threading.Thread):
                             [self.sox, path, "-t", "wav",
                              "/tmp/.stretch.wav", "trim", "0", i],
                             stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)  # well done, dear sox friend. Well done.
+                            stderr=subprocess.PIPE)
                         # sox_process.wait()
                         sox_process.communicate()
                         logging.debug("bpm_process for %s" % path)
@@ -91,14 +93,16 @@ class FiledataThread(threading.Thread):
                 except Exception as e:
                     logging.error(e)
                 bpm = bpm_pattern and float(bpm_pattern.groups()[0]) or 0.0
-                logging.info("Detected bpm %s with %s seconds sampling" % (bpm, i))
+                logging.info(
+                    "Detected bpm %s with %s seconds sampling" % (bpm, i))
                 if bpm:
                     break
 
             with self.condition:
                 try:
-                    self.db.execute("update song set bpm = ?, length = ? where path = ?",
-                                    (bpm, soxi_output, path.decode(FS_ENCODING)))
+                    self.db.execute(
+                        "update song set bpm = ?, length = ? where path = ?",
+                        (bpm, soxi_output, path.decode(FS_ENCODING)))
                     self.db.commit()
                 except:
                     pass
@@ -153,44 +157,67 @@ class LastFMMetadataThread(threading.Thread):
 
             with self.condition:
                 try:
-                    song_id = self.db.execute("select id from song where path = ?",
-                                              (path.decode(FS_ENCODING), )
-                                              ).fetchone()[0]
-                    known_tags = self.db.execute("select distinct weight, name, nameclean from song_x_tag left join tag on (tag_id = id) where song_id = ?;", (song_id,)).fetchall()
+                    song_id = self.db.execute(
+                        "select id from song where path = ?",
+                        (path.decode(FS_ENCODING), )
+                    ).fetchone()[0]
+                    known_tags = self.db.execute(
+                        "select distinct weight, name, nameclean "
+                        "from song_x_tag "
+                        "left join tag on (tag_id = id) "
+                        "where song_id = ?;", (song_id,)).fetchall()
 
                     for t in tags:
                         alreadytag = False
                         for kt in known_tags:
                             if t.item.name == kt[1] and t.weight != kt[0]:
-                                self.db.execute("update song_x_tag set weight = ? where song_id = ? and tag_id = ?;", (t.weight, song_id, t.item.name))
+                                self.db.execute(
+                                    "update song_x_tag set weight = ? "
+                                    "where song_id = ? "
+                                    "and tag_id = ?;",
+                                    (t.weight, song_id, t.item.name))
                                 alreadytag = True
                         if not alreadytag:
-                            if re.match("^([a-zA-Z0-9] )+[a-zA-Z0-9]$",
-                                        t.item.name):  # you damned "e l e c t r o n i c" tag.
-                                cleantag = [re.sub("[^a-zA-Z0-9]+", "",
-                                                   t.item.name)]
+                            # you damned "e l e c t r o n i c" tag.
+                            if re.match(
+                                "^([a-zA-Z0-9] )+[a-zA-Z0-9]$",
+                                    t.item.name):
+                                cleantag = [
+                                    re.sub("[^a-zA-Z0-9]+", "",
+                                           t.item.name)]
                             else:
-                                cleantag = re.sub("[^a-zA-Z0-9 ]+", "",
-                                                  t.item.name).strip().lower().split()
+                                cleantag = re.sub(
+                                    "[^a-zA-Z0-9 ]+", "",
+                                    t.item.name).strip().lower().split()
 
                             savedcleantag = []
                             savedcleantag.extend(cleantag)
                             cleantag = filter(lambda x: len(x) > 3, cleantag)
 
+                            # as a single phrase
                             if len(cleantag) > 6:
-                                cleantag = [" ".join(savedcleantag)]  # as a single phrase
+                                cleantag = [" ".join(savedcleantag)]
 
                             tagcomb = permutations(cleantag, len(cleantag))
                             nameclean = "".join(cleantag)
                             for tc in tagcomb:
-                                similartag = self.db.execute("select nameclean from tag where name like ?;", ("%%%s%%" % "%".join(tc),)).fetchone()
-                                if similartag and len(similartag[0]) == len(nameclean):
+                                similartag = self.db.execute(
+                                    "select nameclean from tag "
+                                    "where name like ?;",
+                                    ("%%%s%%" % "%".join(tc),)).fetchone()
+                                if similartag and \
+                                        len(similartag[0]) == len(nameclean):
                                     nameclean = similartag[0]
-                            self.db.execute("insert or ignore into tag (name, nameclean) values (?, ?);", (t.item.name, nameclean))
+                            self.db.execute(
+                                "insert or ignore into tag (name, nameclean) "
+                                "values (?, ?);", (t.item.name, nameclean))
                             self.db.commit()
-                            tagid = self.db.execute("select last_insert_rowid()").fetchone()[0]
-                            # tagid = self.db.execute("select id from tag where name = ? ", (t.item.name, )).fetchone()[0]
-                            self.db.execute("insert into song_x_tag (song_id, tag_id, weight) values (?, ?, ?);", (song_id, tagid, t.weight))
+                            tagid = self.db.execute(
+                                "select last_insert_rowid()").fetchone()[0]
+                            self.db.execute(
+                                "insert into song_x_tag "
+                                "(song_id, tag_id, weight) values (?, ?, ?);",
+                                (song_id, tagid, t.weight))
                     self.db.commit()
                 except Exception as e:
                     logging.error(e)
@@ -235,7 +262,8 @@ class DiscogsMetadataThread(threading.Thread):
 
             logging.info("Getting infos for %s %s" % (artist, album))
             try:
-                query = u"/database/search?q=%s&type=release" % (quote(" ".join([artist, album])))
+                query = u"/database/search?q=%s&type=release" % \
+                    (quote(" ".join([artist, album])))
                 logging.info(query)
                 if query == lastquery and laststatus == 200:
                     logging.info("Same request already occurred - skipping")
@@ -264,49 +292,77 @@ class DiscogsMetadataThread(threading.Thread):
             if not tags and not genres:
                 continue
 
-            logging.debug("%s tags, %s genres found" % (len(tags), len(genres)))
+            logging.debug("%s tags, %s genres found" %
+                          (len(tags), len(genres)))
 
             with self.condition:
                 try:
-                    album_id = self.db.execute("select album_id from song where path = ?", (path.decode(FS_ENCODING), )).fetchone()[0]
-                    known_tags = self.db.execute("select distinct a.weight, g.desc, g.descclean from album_x_genre a left join genre g on (a.genre_id = g.id) where album_id = ?;", (album_id,)).fetchall()
+                    album_id = self.db.execute(
+                        "select album_id from song where path = ?",
+                        (path.decode(FS_ENCODING), )).fetchone()[0]
+                    known_tags = self.db.execute(
+                        "select distinct a.weight, g.desc, g.descclean "
+                        "from album_x_genre a "
+                        "left join genre g on (a.genre_id = g.id) "
+                        "where album_id = ?;", (album_id,)).fetchall()
 
                     tagset = set(tags + genres)
                     fixedweight = 1 / len(tagset) * 100
 
-                    for t in tagset:  # quite the same as LastFMMetadataThread, except here we use a set
+                    # quite the same as LastFMMetadataThread,
+                    # except here we use a set
+                    for t in tagset:
                         logging.debug("analyzing genre %s" % t)
                         alreadytag = False
                         for kt in known_tags:
                             if t == kt[1]:
                                 alreadytag = True
                                 if fixedweight < kt[0]:
-                                    self.db.execute("update album_x_genre set weight = ? where album_id = ? and genre_id = ?;", (fixedweight, album_id, t))
+                                    self.db.execute(
+                                        "update album_x_genre set weight = ? "
+                                        "where album_id = ? and genre_id = ?;",
+                                        (fixedweight, album_id, t))
                         if not alreadytag:
-                            if re.match("^([a-zA-Z0-9] )+[a-zA-Z0-9]$", t):
-                                cleantag = [re.sub("[^a-zA-Z0-9]+", "", t)]
+                            if re.match(
+                                    "^([a-zA-Z0-9] )+[a-zA-Z0-9]$", t):
+                                cleantag = [
+                                    re.sub("[^a-zA-Z0-9]+", "", t)]
                             else:
-                                cleantag = re.sub("[^a-zA-Z0-9 ]+", "", t).lower().split()
+                                cleantag = re.sub(
+                                    "[^a-zA-Z0-9 ]+", "", t).lower().split()
 
                             savedcleantag = []
                             savedcleantag.extend(cleantag)
                             cleantag = filter(lambda x: len(x) > 3, cleantag)
 
                             if len(cleantag) > 6:
-                                cleantag = [" ".join(savedcleantag)]  # as a single phrase
+                                cleantag = [" ".join(savedcleantag)]
 
                             tagcomb = permutations(cleantag, len(cleantag))
                             nameclean = "".join(cleantag)
                             for tc in tagcomb:
-                                similartag = self.db.execute("select descclean from genre where desc like ?;", ("%%%s%%" % "%".join(tc),)).fetchone()
-                                if similartag and len(similartag[0]) == len(nameclean):
+                                similartag = self.db.execute(
+                                    "select descclean from genre "
+                                    "where desc like ?;",
+                                    ("%%%s%%" % "%".join(tc),)).fetchone()
+                                if similartag and \
+                                        len(similartag[0]) == len(nameclean):
                                     nameclean = similartag[0]
-                            self.db.execute("insert or ignore into genre (desc, descclean) values (?, ?);", (t, nameclean))
+                            self.db.execute(
+                                "insert or ignore into genre "
+                                "(desc, descclean) values (?, ?);",
+                                (t, nameclean))
                             self.db.commit()
-                            genreid = self.db.execute("select last_insert_rowid()").fetchone()[0]
-                            # genreid = self.db.execute("select id from genre where desc = ? ", (t, )).fetchone()[0]
-                            logging.debug("create new association for genre %s on album %s" % (t, album_id))
-                            self.db.execute("insert into album_x_genre (album_id, genre_id, weight) values (?, ?, ?);", (album_id, genreid, fixedweight))
+                            genreid = self.db.execute(
+                                "select last_insert_rowid()").fetchone()[0]
+                            logging.debug(
+                                "create new association for genre %s "
+                                "on album %s" % (t, album_id))
+                            self.db.execute(
+                                "insert into album_x_genre "
+                                "(album_id, genre_id, weight) "
+                                "values (?, ?, ?);",
+                                (album_id, genreid, fixedweight))
                     self.db.commit()
                 except Exception as e:
                     logging.error(e)
@@ -370,7 +426,10 @@ class AcoustidMetadataThread(threading.Thread):
                 logging.info("Analyzing %s file" % path)
                 if self.fpcalc:
                     logging.debug("fingerprint for %s" % path)
-                    fpcalc_process = subprocess.Popen(["/usr/bin/fpcalc", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    fpcalc_process = subprocess.Popen(
+                        ["/usr/bin/fpcalc", path],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE)
                     fpcalc_output = fpcalc_process.communicate()[0].split('\n')
 
                     duration = fpcalc_output[1][9:]
@@ -379,7 +438,12 @@ class AcoustidMetadataThread(threading.Thread):
                 logging.error(e)
 
             if fingerprint:
-                query = u"/v2/lookup?client=8XaBELgH&meta=recording+releasegroups+tracks+puids+usermeta+compress&duration=%s&format=json&fingerprint=%s" % (duration, fingerprint)
+                query = u"/v2/lookup?" \
+                    "client=8XaBELgH" \
+                    "&meta=recording+releasegroups" \
+                    "+tracks+puids+usermeta+compress" \
+                    "&duration=%s&format=json&fingerprint=%s" % \
+                    (duration, fingerprint)
                 if query == lastquery and laststatus == 200:
                     logging.info("Same request already occurred - skipping")
 
@@ -400,18 +464,28 @@ class AcoustidMetadataThread(threading.Thread):
                     results = json.loads(response.read())
                     lastdata = results["results"][0]
                     logging.debug(lastdata)
-                    release = "releasegroups" in lastdata and len(lastdata) and lastdata["releasegroups"][0]
-                    recording = "recordings" in lastdata and len(lastdata) and lastdata["recordings"][0]
+                    release = "releasegroups" in lastdata \
+                        and len(lastdata) and lastdata["releasegroups"][0]
+                    recording = "recordings" in lastdata \
+                        and len(lastdata) and lastdata["recordings"][0]
                     score = "score" in lastdata and lastdata['score']
                     logging.debug(release)
                     logging.debug(recording)
                     if len(lastdata):
                         logging.debug("%s results found" % len(lastdata))
                         puid = 'puids' in lastdata and lastdata["puids"][0]
-                        mbid = release and release['id'] or recording and recording[0]['releasegroups'][0]['id']
-                        mb_title = release and release["title"] or recording and recording[0]['title']
-                        mb_artists = " ".join([i['name'] for i in (release and release["artists"] or recording and recording[0]['artists'])])
-                    logging.debug("Response status: %d %s" % (response.status, response.read()))
+                        mbid = release and release['id'] \
+                            or recording \
+                            and recording[0]['releasegroups'][0]['id']
+                        mb_title = release and release["title"] \
+                            or recording \
+                            and recording[0]['title']
+                        mb_artists = " ".join(
+                            [i['name'] for i in (release and release["artists"]
+                             or recording and recording[0]['artists'])])
+                    logging.debug(
+                        "Response status: %d %s" %
+                        (response.status, response.read()))
                 except Exception as e:
                     continue
                     logging.error(e)
@@ -423,26 +497,40 @@ class AcoustidMetadataThread(threading.Thread):
                     continue
 
                 if len(title) == len(mb_title):
-                    title_distance = hamming(title, mb_title) / float(len(title))
+                    title_distance = hamming(
+                        title, mb_title) / float(len(title))
                 else:
-                    title_distance = levenshtein(title, mb_title) / float(max(len(title), len(mb_title)))
+                    title_distance = levenshtein(
+                        title, mb_title) / float(
+                        max(len(title), len(mb_title)))
 
                 if len(artist) == len(mb_artists):
-                    author_distance = hamming(artist, mb_artists) / float(len(artist))
+                    author_distance = hamming(
+                        artist, mb_artists) / float(len(artist))
                 else:
-                    author_distance = levenshtein(artist, mb_artists) / float(max(len(artist), len(mb_artists)))
+                    author_distance = levenshtein(
+                        artist, mb_artists) / float(
+                        max(len(artist), len(mb_artists)))
 
                 # if title_distance > 0.33 and author_distance > 0.5:
-                logging.debug("distances: %s %s %s" % (score, title_distance, author_distance))
+                logging.debug(
+                    "distances: %s %s %s" %
+                    (score, title_distance, author_distance))
                 #     continue
 
                 logging.debug("puid: %s, mbid %s" % (puid, mbid))
                 with self.condition:
                     try:
-                        song_id, album_id = self.db.execute("select id, album_id from song where path = ?;", (path,)).fetchone()
-                        self.db.execute("update song set puid = ?, mbid = ? where id = ?", (puid, mbid, song_id))
+                        song_id, album_id = self.db.execute(
+                            "select id, album_id from song "
+                            "where path = ?;", (path,)).fetchone()
+                        self.db.execute(
+                            "update song set puid = ?, mbid = ? "
+                            "where id = ?", (puid, mbid, song_id))
                         if title_distance > 0:
-                            self.db.execute("update song set title = ? where id = ?", (mb_title, song_id))
+                            self.db.execute(
+                                "update song set title = ? "
+                                "where id = ?", (mb_title, song_id))
                         self.db.commit()
                     except Exception as e:
                         logging.error(e)
